@@ -26,6 +26,13 @@ func TestConnection_Mechanism(t *testing.T) {
 	}
 }
 
+func TestConnecton_SaslPlainMechanism(t *testing.T) {
+	{
+		c := NewSaslPlainConnection("username", "password")
+		assert.Equal(t, SaslPlain, c.Mechanism())
+	}
+}
+
 func TestConnection_Dialer(t *testing.T) {
 	ctx := context.Background()
 	{
@@ -62,6 +69,13 @@ func TestConnection_Dialer(t *testing.T) {
 		// w/o TLS (still enabled because AWS doesn't support not having TLS)
 		c = NewConnection(true, true, "", "")
 		dialer, err = c.Dialer(ctx)
+		assert.NoError(t, err)
+		assert.NotNil(t, dialer.TLS)
+		assert.NotNil(t, dialer.SASLMechanism)
+	}
+	{
+		c := NewSaslPlainConnection("username", "password")
+		dialer, err := c.Dialer(ctx)
 		assert.NoError(t, err)
 		assert.NotNil(t, dialer.TLS)
 		assert.NotNil(t, dialer.SASLMechanism)
