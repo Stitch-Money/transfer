@@ -9,6 +9,7 @@ import (
 	awsCfg "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/segmentio/kafka-go"
 	"github.com/segmentio/kafka-go/sasl/aws_msk_iam_v2"
+	"github.com/segmentio/kafka-go/sasl/plain"
 	"github.com/segmentio/kafka-go/sasl/scram"
 )
 
@@ -18,6 +19,7 @@ const (
 	Plain       Mechanism = "PLAIN"
 	ScramSha512 Mechanism = "SCRAM-SHA-512"
 	AwsMskIam   Mechanism = "AWS-MSK-IAM"
+	SaslPlain   Mechanism = "SASL-PLAIN"
 )
 
 type Connection struct {
@@ -25,9 +27,11 @@ type Connection struct {
 	disableTLS      bool
 	username        string
 	password        string
+	saslMechanism   string
 }
 
 func NewConnection(enableAWSMSKIAM bool, disableTLS bool, username, password string) Connection {
+
 	return Connection{
 		enableAWSMSKIAM: enableAWSMSKIAM,
 		disableTLS:      disableTLS,
@@ -36,7 +40,19 @@ func NewConnection(enableAWSMSKIAM bool, disableTLS bool, username, password str
 	}
 }
 
+func NewSaslPlainConnection(username string, password string) Connection {
+	return Connection{
+		username:      username,
+		password:      password,
+		saslMechanism: string(Plain),
+	}
+}
+
 func (c Connection) Mechanism() Mechanism {
+	if c.saslMechanism == string(Plain) {
+		return SaslPlain
+	}
+
 	if c.enableAWSMSKIAM {
 		return AwsMskIam
 	}
@@ -74,8 +90,15 @@ func (c Connection) Dialer(ctx context.Context, awsOptFns ...func(options *awsCf
 		dialer.SASLMechanism = aws_msk_iam_v2.NewMechanism(_awsCfg)
 		// We don't need to disable TLS for AWS IAM since MSK will always enable TLS.
 		dialer.TLS = &tls.Config{}
+	case SaslPlain:
+		mechanism := plain.Mechanism{Username: c.username, Password: c.password}
+
+		dialer.SASLMechanism = mechanism
+		if !c.disableTLS {
+			dialer.TLS = &tls.Config{}
+		}
 	case Plain:
-		// No mechanism
+		// do nothing
 	default:
 		return nil, fmt.Errorf("unsupported kafka mechanism: %s", c.Mechanism())
 	}
@@ -109,8 +132,15 @@ func (c Connection) Transport(ctx context.Context, awsOptFns ...func(options *aw
 		if !c.disableTLS {
 			transport.TLS = &tls.Config{}
 		}
+	case SaslPlain:
+		mechanism := plain.Mechanism{Username: c.username, Password: c.password}
+
+		transport.SASL = mechanism
+		if !c.disableTLS {
+			transport.TLS = &tls.Config{}
+		}
 	case Plain:
-		// No mechanism
+		// do nothing
 	default:
 		return nil, fmt.Errorf("unsupported kafka mechanism: %s", c.Mechanism())
 	}
