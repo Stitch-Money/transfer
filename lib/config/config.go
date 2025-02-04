@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"strings"
 
@@ -76,6 +77,7 @@ func readFileToConfig(pathToConfig string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	slog.Info(fmt.Sprint(string(bytes)))
 
 	var config Config
 	err = yaml.Unmarshal(bytes, &config)
