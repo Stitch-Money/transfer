@@ -70,6 +70,7 @@ func StartConsumer(ctx context.Context, cfg config.Config, inMemDB *models.Datab
 		empty := stringutil.Empty(topicConfig.Database, topicConfig.Schema, topicConfig.Topic, topicConfig.CDCFormat)
 		if empty {
 			slog.Warn("database, schema, topic or cdc format is empty, skipping")
+			continue
 		}
 
 		tcFmtMap.Add(topicConfig.Topic, TopicConfigFormatter{
