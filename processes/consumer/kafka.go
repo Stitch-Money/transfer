@@ -13,6 +13,7 @@ import (
 	"github.com/artie-labs/transfer/lib/jitter"
 	"github.com/artie-labs/transfer/lib/kafkalib"
 	"github.com/artie-labs/transfer/lib/logger"
+	"github.com/artie-labs/transfer/lib/stringutil"
 	"github.com/artie-labs/transfer/lib/telemetry/metrics/base"
 	"github.com/artie-labs/transfer/models"
 	"github.com/segmentio/kafka-go"
@@ -66,6 +67,11 @@ func StartConsumer(ctx context.Context, cfg config.Config, inMemDB *models.Datab
 	topicToConsumer = NewTopicToConsumer()
 	var topics []string
 	for _, topicConfig := range cfg.Kafka.TopicConfigs {
+		empty := stringutil.Empty(topicConfig.Database, topicConfig.Schema, topicConfig.Topic, topicConfig.CDCFormat)
+		if empty {
+			slog.Warn("database, schema, topic or cdc format is empty, skipping")
+		}
+
 		tcFmtMap.Add(topicConfig.Topic, TopicConfigFormatter{
 			tc:     *topicConfig,
 			Format: format.GetFormatParser(topicConfig.CDCFormat, topicConfig.Topic),
