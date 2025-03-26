@@ -12,14 +12,13 @@ import (
 	"github.com/xitongsys/parquet-go/parquet"
 	"github.com/xitongsys/parquet-go/writer"
 
+	"github.com/artie-labs/transfer/lib/awslib"
 	"github.com/artie-labs/transfer/lib/config"
 	"github.com/artie-labs/transfer/lib/kafkalib"
 	"github.com/artie-labs/transfer/lib/optimization"
 	"github.com/artie-labs/transfer/lib/parquetutil"
-	"github.com/artie-labs/transfer/lib/s3lib"
 	"github.com/artie-labs/transfer/lib/sql"
 	"github.com/artie-labs/transfer/lib/stringutil"
-	"github.com/artie-labs/transfer/lib/typing"
 	"github.com/artie-labs/transfer/lib/typing/ext"
 )
 
@@ -130,12 +129,13 @@ func (s *Store) Merge(ctx context.Context, tableData *optimization.TableData) (b
 		}
 	}()
 
-	if _, err = s3lib.UploadLocalFileToS3(ctx, s3lib.UploadArgs{
+	if _, err = awslib.UploadLocalFileToS3(ctx, awslib.UploadArgs{
 		Bucket:                     s.config.S3.Bucket,
 		OptionalS3Prefix:           s.ObjectPrefix(tableData),
 		FilePath:                   fp,
-		OverrideAWSAccessKeyID:     typing.ToPtr(s.config.S3.AwsAccessKeyID),
-		OverrideAWSAccessKeySecret: typing.ToPtr(s.config.S3.AwsSecretAccessKey),
+		OverrideAWSAccessKeyID:     s.config.S3.AwsAccessKeyID,
+		OverrideAWSAccessKeySecret: s.config.S3.AwsSecretAccessKey,
+		Region:                     s.config.S3.AwsRegion,
 	}); err != nil {
 		return false, fmt.Errorf("failed to upload file to s3: %w", err)
 	}

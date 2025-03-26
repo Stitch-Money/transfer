@@ -1,7 +1,6 @@
 package kafkalib
 
 import (
-	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -34,7 +33,7 @@ func TestConnecton_SaslPlainMechanism(t *testing.T) {
 }
 
 func TestConnection_Dialer(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	{
 		// Plain
 		c := NewConnection(false, false, "", "")

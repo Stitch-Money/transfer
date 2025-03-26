@@ -3,15 +3,18 @@ package redshift
 import (
 	"context"
 	"fmt"
+	"os"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/artie-labs/transfer/clients/redshift/dialect"
 	"github.com/artie-labs/transfer/clients/shared"
+	"github.com/artie-labs/transfer/lib/awslib"
 	"github.com/artie-labs/transfer/lib/config"
 	"github.com/artie-labs/transfer/lib/db"
 	"github.com/artie-labs/transfer/lib/destination"
 	"github.com/artie-labs/transfer/lib/destination/types"
+	"github.com/artie-labs/transfer/lib/environ"
 	"github.com/artie-labs/transfer/lib/kafkalib"
 	"github.com/artie-labs/transfer/lib/optimization"
 	"github.com/artie-labs/transfer/lib/sql"
@@ -24,7 +27,22 @@ type Store struct {
 	configMap         *types.DestinationTableConfigMap
 	config            config.Config
 
+	// Generated:
+	_awsCredentials *awslib.Credentials
 	db.Store
+}
+
+func (s *Store) BuildCredentialsClause(ctx context.Context) (string, error) {
+	if s._awsCredentials == nil {
+		return s.credentialsClause, nil
+	}
+
+	creds, err := s._awsCredentials.BuildCredentials(ctx)
+	if err != nil {
+		return "", fmt.Errorf("failed to build credentials: %w", err)
+	}
+
+	return fmt.Sprintf(`ACCESS_KEY_ID '%s' SECRET_ACCESS_KEY '%s' SESSION_TOKEN '%s'`, creds.Value.AccessKeyID, creds.Value.SecretAccessKey, creds.Value.SessionToken), nil
 }
 
 func (s *Store) DropTable(_ context.Context, _ sql.TableIdentifier) error {
@@ -69,7 +87,7 @@ func (s *Store) dialect() dialect.RedshiftDialect {
 
 func (s *Store) GetTableConfig(tableID sql.TableIdentifier, dropDeletedColumns bool) (*types.DestinationTableConfig, error) {
 	return shared.GetTableCfgArgs{
-		Dwh:                   s,
+		Destination:           s,
 		TableID:               tableID,
 		ConfigMap:             s.configMap,
 		ColumnNameForName:     "column_name",
@@ -94,7 +112,7 @@ func (s *Store) Dedupe(tableID sql.TableIdentifier, primaryKeys []string, includ
 	return destination.ExecStatements(s, dedupeQueries)
 }
 
-func LoadRedshift(cfg config.Config, _store *db.Store) (*Store, error) {
+func LoadRedshift(ctx context.Context, cfg config.Config, _store *db.Store) (*Store, error) {
 	if _store != nil {
 		// Used for tests.
 		return &Store{
@@ -114,13 +132,31 @@ func LoadRedshift(cfg config.Config, _store *db.Store) (*Store, error) {
 		return nil, err
 	}
 
-	return &Store{
+	s := &Store{
 		credentialsClause: cfg.Redshift.CredentialsClause,
 		bucket:            cfg.Redshift.Bucket,
 		optionalS3Prefix:  cfg.Redshift.OptionalS3Prefix,
 		configMap:         &types.DestinationTableConfigMap{},
 		config:            cfg,
+		Store:             store,
+	}
 
-		Store: store,
-	}, nil
+	if err = environ.MustGetEnv("AWS_REGION"); err != nil {
+		return nil, err
+	}
+
+	if cfg.Redshift.RoleARN != "" {
+		if err = environ.MustGetEnv("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"); err != nil {
+			return nil, err
+		}
+
+		creds, err := awslib.GenerateSTSCredentials(ctx, os.Getenv("AWS_ACCESS_KEY_ID"), os.Getenv("AWS_SECRET_ACCESS_KEY"), cfg.Redshift.RoleARN, "ArtieTransfer")
+		if err != nil {
+			return nil, err
+		}
+
+		s._awsCredentials = &creds
+	}
+
+	return s, nil
 }

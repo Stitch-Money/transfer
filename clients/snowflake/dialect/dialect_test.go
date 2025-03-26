@@ -37,7 +37,7 @@ func TestSnowflakeDialect_BuildCreateTableQuery(t *testing.T) {
 
 	// Temporary:
 	assert.Equal(t,
-		`CREATE TABLE IF NOT EXISTS {TABLE} ({PART_1},{PART_2}) DATA_RETENTION_TIME_IN_DAYS = 0 STAGE_COPY_OPTIONS = ( PURGE = TRUE ) STAGE_FILE_FORMAT = ( TYPE = 'csv' FIELD_DELIMITER= '\t' FIELD_OPTIONALLY_ENCLOSED_BY='"' NULL_IF='\\N' EMPTY_FIELD_AS_NULL=FALSE)`,
+		`CREATE TABLE IF NOT EXISTS {TABLE} ({PART_1},{PART_2}) DATA_RETENTION_TIME_IN_DAYS = 0 STAGE_COPY_OPTIONS = ( PURGE = TRUE ) STAGE_FILE_FORMAT = ( TYPE = 'csv' FIELD_DELIMITER= '\t' FIELD_OPTIONALLY_ENCLOSED_BY='"' NULL_IF='__artie_null_value' EMPTY_FIELD_AS_NULL=FALSE)`,
 		SnowflakeDialect{}.BuildCreateTableQuery(fakeTableID, true, []string{"{PART_1}", "{PART_2}"}),
 	)
 	// Not temporary:
@@ -49,14 +49,14 @@ func TestSnowflakeDialect_BuildCreateTableQuery(t *testing.T) {
 
 func TestSnowflakeDialect_BuildDropTableQuery(t *testing.T) {
 	assert.Equal(t,
-		`DROP TABLE IF EXISTS database1.schema1."TABLE1"`,
+		`DROP TABLE IF EXISTS "DATABASE1"."SCHEMA1"."TABLE1"`,
 		SnowflakeDialect{}.BuildDropTableQuery(NewTableIdentifier("database1", "schema1", "table1")),
 	)
 }
 
 func TestSnowflakeDialect_BuildTruncateTableQuery(t *testing.T) {
 	assert.Equal(t,
-		`TRUNCATE TABLE IF EXISTS database1.schema1."TABLE1"`,
+		`TRUNCATE TABLE IF EXISTS "DATABASE1"."SCHEMA1"."TABLE1"`,
 		SnowflakeDialect{}.BuildTruncateTableQuery(NewTableIdentifier("database1", "schema1", "table1")),
 	)
 }
@@ -298,4 +298,66 @@ func TestSnowflakeDialect_BuildRemoveAllFilesFromStage(t *testing.T) {
 			SnowflakeDialect{}.BuildRemoveFilesFromStage("STAGE_NAME", "path1/subpath2"),
 		)
 	}
+}
+
+func TestSnowflakeDialect_EscapeColumns(t *testing.T) {
+	{
+		// Test basic string columns
+		var cols columns.Columns
+		cols.AddColumn(columns.NewColumn("foo", typing.String))
+		cols.AddColumn(columns.NewColumn("bar", typing.String))
+		assert.Equal(t, "$1,$2", SnowflakeDialect{}.EscapeColumns(cols.GetColumns(), ","))
+	}
+	{
+		// Test string columns with struct
+		var cols columns.Columns
+		cols.AddColumn(columns.NewColumn("foo", typing.String))
+		cols.AddColumn(columns.NewColumn("bar", typing.String))
+		cols.AddColumn(columns.NewColumn("struct", typing.Struct))
+		assert.Equal(t, "$1,$2,PARSE_JSON($3)", SnowflakeDialect{}.EscapeColumns(cols.GetColumns(), ","))
+	}
+	{
+		// Test string columns with struct and array
+		var cols columns.Columns
+		cols.AddColumn(columns.NewColumn("foo", typing.String))
+		cols.AddColumn(columns.NewColumn("bar", typing.String))
+		cols.AddColumn(columns.NewColumn("struct", typing.Struct))
+		cols.AddColumn(columns.NewColumn("array", typing.Array))
+		assert.Equal(t, "$1,$2,PARSE_JSON($3),CAST(PARSE_JSON($4) AS ARRAY) AS $4", SnowflakeDialect{}.EscapeColumns(cols.GetColumns(), ","))
+	}
+	{
+		// Test with invalid columns mixed in
+		var cols columns.Columns
+		cols.AddColumn(columns.NewColumn("foo", typing.String))
+		cols.AddColumn(columns.NewColumn("bar", typing.String))
+		cols.AddColumn(columns.NewColumn("struct", typing.Struct))
+		cols.AddColumn(columns.NewColumn("array", typing.Array))
+		assert.Equal(t, "$1,$2,PARSE_JSON($3),CAST(PARSE_JSON($4) AS ARRAY) AS $4", SnowflakeDialect{}.EscapeColumns(cols.GetColumns(), ","))
+	}
+}
+
+func TestSnowflakeDialect_BuildCopyIntoTableQuery(t *testing.T) {
+	fakeTableID := &mocks.FakeTableIdentifier{}
+	fakeTableID.FullyQualifiedNameReturns("database.schema.table")
+
+	cols := buildColumns(map[string]typing.KindDetails{
+		"id":         typing.String,
+		"name":       typing.String,
+		"data":       typing.Struct,
+		"tags":       typing.Array,
+		"created_at": typing.TimestampNTZ,
+	})
+
+	query := SnowflakeDialect{}.BuildCopyIntoTableQuery(
+		fakeTableID,
+		cols.ValidColumns(),
+		"%table_stage",
+		"data.csv.gz",
+	)
+
+	expected := `COPY INTO database.schema.table ("CREATED_AT","DATA","ID","NAME","TAGS") ` +
+		`FROM (SELECT $1,PARSE_JSON($2),$3,$4,CAST(PARSE_JSON($5) AS ARRAY) AS $5 FROM @%table_stage) ` +
+		`FILES = ('data.csv.gz')`
+
+	assert.Equal(t, expected, query)
 }

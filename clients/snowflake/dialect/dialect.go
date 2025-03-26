@@ -156,16 +156,18 @@ WHEN NOT MATCHED THEN INSERT (%s) VALUES (%s);`,
 		return []string{}, err
 	}
 
+	deleteColumnMarker := sql.QuotedDeleteColumnMarker(constants.StagingAlias, sd)
+
 	return []string{baseQuery + fmt.Sprintf(`
 WHEN MATCHED AND %s THEN DELETE
 WHEN MATCHED AND IFNULL(%s, false) = false THEN UPDATE SET %s
 WHEN NOT MATCHED AND IFNULL(%s, false) = false THEN INSERT (%s) VALUES (%s);`,
 		// Delete
-		sql.QuotedDeleteColumnMarker(constants.StagingAlias, sd),
+		deleteColumnMarker,
 		// Update
-		sql.QuotedDeleteColumnMarker(constants.StagingAlias, sd), sql.BuildColumnsUpdateFragment(cols, constants.StagingAlias, constants.TargetAlias, sd),
+		deleteColumnMarker, sql.BuildColumnsUpdateFragment(cols, constants.StagingAlias, constants.TargetAlias, sd),
 		// Insert
-		sql.QuotedDeleteColumnMarker(constants.StagingAlias, sd), strings.Join(sql.QuoteColumns(cols, sd), ","),
+		deleteColumnMarker, strings.Join(sql.QuoteColumns(cols, sd), ","),
 		strings.Join(sql.QuoteTableAliasColumns(constants.StagingAlias, cols, sd), ","),
 	)}, nil
 }
@@ -183,4 +185,35 @@ WHERE
 func (SnowflakeDialect) BuildRemoveFilesFromStage(stageName string, path string) string {
 	// https://docs.snowflake.com/en/sql-reference/sql/remove
 	return fmt.Sprintf("REMOVE @%s", filepath.Join(stageName, path))
+}
+
+// EscapeColumns will take columns, escape and return them in ordered received.
+// It'll return like this: $1, $2, $3
+func (SnowflakeDialect) EscapeColumns(columns []columns.Column, delimiter string) string {
+	var escapedCols []string
+	var index int
+	for _, col := range columns {
+		escapedCol := fmt.Sprintf("$%d", index+1)
+		switch col.KindDetails {
+		case typing.Struct:
+			// https://community.snowflake.com/s/article/how-to-load-json-values-in-a-csv-file
+			escapedCol = fmt.Sprintf("PARSE_JSON(%s)", escapedCol)
+		case typing.Array:
+			escapedCol = fmt.Sprintf("CAST(PARSE_JSON(%s) AS ARRAY) AS %s", escapedCol, escapedCol)
+		}
+
+		escapedCols = append(escapedCols, escapedCol)
+		index += 1
+	}
+
+	return strings.Join(escapedCols, delimiter)
+}
+
+func (sd SnowflakeDialect) BuildCopyIntoTableQuery(tableID sql.TableIdentifier, columns []columns.Column, stageName string, fileName string) string {
+	return fmt.Sprintf("COPY INTO %s (%s) FROM (SELECT %s FROM @%s) FILES = ('%s')",
+		// COPY INTO <table> (<columns>)
+		tableID.FullyQualifiedName(), strings.Join(sql.QuoteColumns(columns, sd), ","),
+		// FROM (SELECT <columns> FROM @<stage> FILES = ('<file_name>'))
+		sd.EscapeColumns(columns, ","), stageName, fileName,
+	)
 }

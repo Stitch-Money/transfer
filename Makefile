@@ -6,7 +6,7 @@ all:
 
 .PHONY: static
 static:
-	staticcheck ./...
+	go tool staticcheck ./...
 
 .PHONY: vet
 vet:
@@ -26,9 +26,7 @@ clean:
 
 .PHONY: generate
 generate:
-	go get github.com/maxbrunsfeld/counterfeiter/v6
-	go generate ./...
-	go mod tidy
+	cd lib/mocks && go tool counterfeiter -generate
 .PHONY: build
 build:
 	goreleaser build --clean
@@ -54,3 +52,9 @@ bench_redshift:
 .PHONY: bench_mongo
 bench_mongo:
 	go test ./lib/cdc/mongo -bench=Bench -benchtime=20s
+
+
+.PHONY snowflake-itest:
+snowflake-itest:
+	# This expects a config file in .personal/integration_tests/snowflake.yaml
+	go run integration_tests/snowflake/main.go --config .personal/integration_tests/snowflake.yaml

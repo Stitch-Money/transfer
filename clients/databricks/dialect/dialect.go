@@ -123,15 +123,17 @@ WHEN NOT MATCHED THEN INSERT (%s) VALUES (%s);`,
 		return nil, err
 	}
 
+	deleteColumnMarker := sql.QuotedDeleteColumnMarker(constants.StagingAlias, d)
+
 	// Handle the case where hard-deletes are included
 	return []string{baseQuery + fmt.Sprintf(`
 WHEN MATCHED AND %s THEN DELETE
 WHEN MATCHED AND IFNULL(%s, false) = false THEN UPDATE SET %s
 WHEN NOT MATCHED AND IFNULL(%s, false) = false THEN INSERT (%s) VALUES (%s);`,
-		sql.QuotedDeleteColumnMarker(constants.StagingAlias, d),
-		sql.QuotedDeleteColumnMarker(constants.StagingAlias, d),
+		deleteColumnMarker,
+		deleteColumnMarker,
 		sql.BuildColumnsUpdateFragment(cols, constants.StagingAlias, constants.TargetAlias, d),
-		sql.QuotedDeleteColumnMarker(constants.StagingAlias, d),
+		deleteColumnMarker,
 		strings.Join(sql.QuoteColumns(cols, d), ","),
 		strings.Join(sql.QuoteTableAliasColumns(constants.StagingAlias, cols, d), ","),
 	)}, nil
@@ -157,4 +159,30 @@ func (d DatabricksDialect) BuildRemoveFileFromVolumeQuery(filePath string) strin
 
 func (d DatabricksDialect) GetDefaultValueStrategy() sql.DefaultValueStrategy {
 	return sql.Native
+}
+
+func (d DatabricksDialect) BuildCopyIntoQuery(tempTableID sql.TableIdentifier, columns []string, filePath string) string {
+	// Copy file from DBFS -> table via COPY INTO, ref: https://docs.databricks.com/en/sql/language-manual/delta-copy-into.html
+	return fmt.Sprintf(`
+COPY INTO %s
+BY POSITION
+FROM (
+    SELECT %s FROM '%s'
+)
+FILEFORMAT = CSV
+FORMAT_OPTIONS (
+    'escape' = '"',
+    'delimiter' = '\t',
+    'header' = 'false',
+    'nullValue' = '%s',
+    'multiLine' = 'true',
+    'compression' = 'gzip'
+);`,
+		// COPY INTO
+		tempTableID.FullyQualifiedName(),
+		// SELECT columns FROM file
+		strings.Join(columns, ", "), filePath,
+		// Null value
+		constants.NullValuePlaceholder,
+	)
 }

@@ -1,6 +1,7 @@
-package s3lib
+package awslib
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"os"
@@ -16,8 +17,10 @@ type UploadArgs struct {
 	Bucket                     string
 	OptionalS3Prefix           string
 	FilePath                   string
-	OverrideAWSAccessKeyID     *string
-	OverrideAWSAccessKeySecret *string
+	OverrideAWSAccessKeyID     string
+	OverrideAWSAccessKeySecret string
+	OverrideAWSSessionToken    string
+	Region                     string
 }
 
 // UploadLocalFileToS3 - takes a filepath with the file and bucket and optional expiry
@@ -26,11 +29,12 @@ func UploadLocalFileToS3(ctx context.Context, args UploadArgs) (string, error) {
 	var cfg aws.Config
 	var err error
 
-	if args.OverrideAWSAccessKeyID != nil && args.OverrideAWSAccessKeySecret != nil {
-		creds := credentials.NewStaticCredentialsProvider(*args.OverrideAWSAccessKeyID, *args.OverrideAWSAccessKeySecret, "")
-		cfg, err = config.LoadDefaultConfig(ctx, config.WithCredentialsProvider(creds))
+	awsRegion := cmp.Or(args.Region, os.Getenv("AWS_REGION"))
+	if args.OverrideAWSAccessKeyID != "" && args.OverrideAWSAccessKeySecret != "" {
+		creds := credentials.NewStaticCredentialsProvider(args.OverrideAWSAccessKeyID, args.OverrideAWSAccessKeySecret, args.OverrideAWSSessionToken)
+		cfg, err = config.LoadDefaultConfig(ctx, config.WithCredentialsProvider(creds), config.WithRegion(awsRegion))
 	} else {
-		cfg, err = config.LoadDefaultConfig(ctx)
+		cfg, err = config.LoadDefaultConfig(ctx, config.WithRegion(awsRegion))
 	}
 
 	if err != nil {

@@ -323,3 +323,25 @@ func TestDatabricksDialect_BuildMergeQueries_EscapePrimaryKeys(t *testing.T) {
 		},
 		strings.Split(strings.TrimSpace(statements[0]), "\n"))
 }
+
+func TestDatabricksDialect_BuildCopyIntoQuery(t *testing.T) {
+	dialect := DatabricksDialect{}
+	tempTableID := &mocks.FakeTableIdentifier{}
+	tempTableID.FullyQualifiedNameReturns("{{fq_name}}")
+
+	assert.Equal(t, fmt.Sprintf(`
+COPY INTO {{fq_name}}
+BY POSITION
+FROM (
+    SELECT _c0, _c1 FROM 'dbfs:/path/to/file.csv.gz'
+)
+FILEFORMAT = CSV
+FORMAT_OPTIONS (
+    'escape' = '"',
+    'delimiter' = '\t',
+    'header' = 'false',
+    'nullValue' = '%s',
+    'multiLine' = 'true',
+    'compression' = 'gzip'
+);`, constants.NullValuePlaceholder), dialect.BuildCopyIntoQuery(tempTableID, []string{"_c0", "_c1"}, "dbfs:/path/to/file.csv.gz"))
+}

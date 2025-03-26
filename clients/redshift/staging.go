@@ -1,18 +1,16 @@
 package redshift
 
 import (
-	"compress/gzip"
 	"context"
-	"encoding/csv"
 	"fmt"
 	"log/slog"
 	"os"
-	"strings"
 
 	"github.com/artie-labs/transfer/clients/shared"
+	"github.com/artie-labs/transfer/lib/awslib"
+	"github.com/artie-labs/transfer/lib/csvwriter"
 	"github.com/artie-labs/transfer/lib/destination/types"
 	"github.com/artie-labs/transfer/lib/optimization"
-	"github.com/artie-labs/transfer/lib/s3lib"
 	"github.com/artie-labs/transfer/lib/sql"
 	"github.com/artie-labs/transfer/lib/typing"
 	"github.com/artie-labs/transfer/lib/typing/columns"
@@ -52,28 +50,42 @@ func (s *Store) PrepareTemporaryTable(ctx context.Context, tableData *optimizati
 		}
 	}()
 
-	// Load fp into s3, get S3 URI and pass it down.
-	s3Uri, err := s3lib.UploadLocalFileToS3(ctx, s3lib.UploadArgs{
+	args := awslib.UploadArgs{
 		OptionalS3Prefix: s.optionalS3Prefix,
 		Bucket:           s.bucket,
 		FilePath:         fp,
-	})
+		Region:           os.Getenv("AWS_REGION"),
+	}
+
+	if s._awsCredentials != nil {
+		creds, err := s._awsCredentials.BuildCredentials(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to build credentials: %w", err)
+		}
+
+		args.OverrideAWSAccessKeyID = creds.Value.AccessKeyID
+		args.OverrideAWSAccessKeySecret = creds.Value.SecretAccessKey
+		args.OverrideAWSSessionToken = creds.Value.SessionToken
+	}
+
+	// Load fp into s3, get S3 URI and pass it down.
+	s3Uri, err := awslib.UploadLocalFileToS3(ctx, args)
 
 	if err != nil {
 		return fmt.Errorf("failed to upload %q to s3: %w", fp, err)
 	}
 
-	// COPY table_name FROM '/path/to/local/file' DELIMITER '\t' NULL '\\N' FORMAT csv;
-	// Note, we need to specify `\\N` here and in `CastColVal(..)` we are only doing `\N`, this is because Redshift treats backslashes as an escape character.
-	// So, it'll convert `\N` => `\\N` during COPY.
-	copyStmt := fmt.Sprintf(
-		`COPY %s (%s) FROM '%s' DELIMITER '\t' NULL AS '\\N' GZIP FORMAT CSV %s dateformat 'auto' timeformat 'auto';`,
-		tempTableID.FullyQualifiedName(),
-		strings.Join(sql.QuoteColumns(tableData.ReadOnlyInMemoryCols().ValidColumns(), s.Dialect()), ","),
-		s3Uri,
-		s.credentialsClause,
-	)
+	var cols []string
+	for _, col := range tableData.ReadOnlyInMemoryCols().ValidColumns() {
+		cols = append(cols, col.Name())
+	}
 
+	credentialsClause, err := s.BuildCredentialsClause(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to build credentials clause: %w", err)
+	}
+
+	copyStmt := s.dialect().BuildCopyStatement(tempTableID, cols, s3Uri, credentialsClause)
 	if _, err = s.Exec(copyStmt); err != nil {
 		return fmt.Errorf("failed to run COPY for temporary table: %w", err)
 	}
@@ -83,17 +95,13 @@ func (s *Store) PrepareTemporaryTable(ctx context.Context, tableData *optimizati
 
 func (s *Store) loadTemporaryTable(tableData *optimization.TableData, newTableID sql.TableIdentifier) (string, map[string]int32, error) {
 	filePath := fmt.Sprintf("/tmp/%s.csv.gz", newTableID.FullyQualifiedName())
-	file, err := os.Create(filePath)
+	gzipWriter, err := csvwriter.NewGzipWriter(filePath)
 	if err != nil {
 		return "", nil, err
 	}
 
-	defer file.Close()
-	gzipWriter := gzip.NewWriter(file)
 	defer gzipWriter.Close()
 
-	writer := csv.NewWriter(gzipWriter)
-	writer.Comma = '\t'
 	_columns := tableData.ReadOnlyInMemoryCols().ValidColumns()
 	columnToNewLengthMap := make(map[string]int32)
 	for _, value := range tableData.Rows() {
@@ -120,14 +128,13 @@ func (s *Store) loadTemporaryTable(tableData *optimization.TableData, newTableID
 			row = append(row, result.Value)
 		}
 
-		if err = writer.Write(row); err != nil {
+		if err = gzipWriter.Write(row); err != nil {
 			return "", nil, fmt.Errorf("failed to write to csv: %w", err)
 		}
 	}
 
-	writer.Flush()
-	if err = writer.Error(); err != nil {
-		return "", nil, fmt.Errorf("failed to flush csv writer: %w", err)
+	if err = gzipWriter.Flush(); err != nil {
+		return "", nil, fmt.Errorf("failed to flush and close the gzip writer: %w", err)
 	}
 
 	// This will update the staging columns with the new string precision.

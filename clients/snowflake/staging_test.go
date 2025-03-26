@@ -1,11 +1,11 @@
 package snowflake
 
 import (
-	"context"
 	"encoding/csv"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/stretchr/testify/assert"
@@ -26,7 +26,7 @@ func (s *SnowflakeTestSuite) TestBuildRemoveFilesFromStage() {
 	table := dialect.NewTableIdentifier("db", "schema", "table")
 
 	query := s.stageStore.dialect().BuildRemoveFilesFromStage(addPrefixToTableName(table, "%"), "")
-	assert.Equal(s.T(), `REMOVE @db.schema."%TABLE"`, query)
+	assert.Equal(s.T(), `REMOVE @"DB"."SCHEMA"."%TABLE"`, query)
 }
 
 func (s *SnowflakeTestSuite) TestReplaceExceededValues() {
@@ -51,7 +51,7 @@ func (s *SnowflakeTestSuite) TestCastColValStaging() {
 		// Null
 		value, err := castColValStaging(nil, typing.String)
 		assert.NoError(s.T(), err)
-		assert.Equal(s.T(), `\\N`, value)
+		assert.Equal(s.T(), constants.NullValuePlaceholder, value)
 	}
 	{
 		// Struct field
@@ -74,64 +74,62 @@ func (s *SnowflakeTestSuite) TestCastColValStaging() {
 	}
 }
 
+// runTestCaseWithReset runs a test case with a fresh store state
+func (s *SnowflakeTestSuite) runTestCaseWithReset(fn func()) {
+	s.ResetStore()
+	fn()
+}
+
 func (s *SnowflakeTestSuite) TestBackfillColumn() {
 	tableID := dialect.NewTableIdentifier("db", "public", "tableName")
 
-	backfilledCol := columns.NewColumn("foo", typing.Boolean)
-	backfilledCol.SetDefaultValue(true)
-	backfilledCol.SetBackfilled(true)
-
 	needsBackfillCol := columns.NewColumn("foo", typing.Boolean)
 	needsBackfillCol.SetDefaultValue(true)
-
 	needsBackfillColDefault := columns.NewColumn("default", typing.Boolean)
 	needsBackfillColDefault.SetDefaultValue(true)
 
-	testCases := []struct {
-		name        string
-		col         columns.Column
-		backfillSQL string
-		commentSQL  string
-	}{
-		{
-			name: "col that doesn't have default val",
-			col:  columns.NewColumn("foo", typing.Invalid),
-		},
-		{
-			name: "col that has default value but already backfilled",
-			col:  backfilledCol,
-		},
-		{
-			name:        "col that has default value that needs to be backfilled",
-			col:         needsBackfillCol,
-			backfillSQL: `UPDATE db.public."TABLENAME" SET "FOO" = true WHERE "FOO" IS NULL;`,
-			commentSQL:  `COMMENT ON COLUMN db.public."TABLENAME"."FOO" IS '{"backfilled": true}';`,
-		},
-		{
-			name:        "default col that has default value that needs to be backfilled",
-			col:         needsBackfillColDefault,
-			backfillSQL: `UPDATE db.public."TABLENAME" SET "DEFAULT" = true WHERE "DEFAULT" IS NULL;`,
-			commentSQL:  `COMMENT ON COLUMN db.public."TABLENAME"."DEFAULT" IS '{"backfilled": true}';`,
-		},
-	}
+	s.runTestCaseWithReset(func() {
+		// col that doesn't have default value
+		assert.NoError(s.T(), shared.BackfillColumn(s.stageStore, columns.NewColumn("foo", typing.Invalid), tableID))
+		assert.Equal(s.T(), 0, s.fakeStageStore.ExecCallCount())
+	})
 
-	var count int
-	for _, testCase := range testCases {
-		err := shared.BackfillColumn(s.stageStore, testCase.col, tableID)
-		assert.NoError(s.T(), err, testCase.name)
-		if testCase.backfillSQL != "" && testCase.commentSQL != "" {
-			backfillSQL, _ := s.fakeStageStore.ExecArgsForCall(count)
-			assert.Equal(s.T(), testCase.backfillSQL, backfillSQL, testCase.name)
+	s.runTestCaseWithReset(func() {
+		// col that has default value but already backfilled
+		backfilledCol := columns.NewColumn("foo", typing.Boolean)
+		backfilledCol.SetDefaultValue(true)
+		backfilledCol.SetBackfilled(true)
+		assert.NoError(s.T(), shared.BackfillColumn(s.stageStore, backfilledCol, tableID))
+		assert.Equal(s.T(), 0, s.fakeStageStore.ExecCallCount())
+	})
 
-			count++
-			commentSQL, _ := s.fakeStageStore.ExecArgsForCall(count)
-			assert.Equal(s.T(), testCase.commentSQL, commentSQL, testCase.name)
+	s.runTestCaseWithReset(func() {
+		// col that has default value that needs to be backfilled
+		assert.NoError(s.T(), shared.BackfillColumn(s.stageStore, needsBackfillCol, tableID))
+		assert.Equal(s.T(), 2, s.fakeStageStore.ExecCallCount())
+	})
 
-			count++
-		} else {
-			assert.Equal(s.T(), 0, s.fakeStageStore.ExecCallCount())
-		}
-	}
+	s.runTestCaseWithReset(func() {
+		// default col that has default value that needs to be backfilled
+		assert.NoError(s.T(), shared.BackfillColumn(s.stageStore, needsBackfillColDefault, tableID))
+
+		backfillSQL, _ := s.fakeStageStore.ExecArgsForCall(0)
+		assert.Equal(s.T(), `UPDATE "DB"."PUBLIC"."TABLENAME" as t SET t."DEFAULT" = true WHERE t."DEFAULT" IS NULL;`, backfillSQL)
+
+		commentSQL, _ := s.fakeStageStore.ExecArgsForCall(1)
+		assert.Equal(s.T(), `COMMENT ON COLUMN "DB"."PUBLIC"."TABLENAME"."DEFAULT" IS '{"backfilled": true}';`, commentSQL)
+	})
+
+	s.runTestCaseWithReset(func() {
+		// default col that has default value that needs to be backfilled (repeat)
+		assert.NoError(s.T(), shared.BackfillColumn(s.stageStore, needsBackfillColDefault, tableID))
+
+		backfillSQL, _ := s.fakeStageStore.ExecArgsForCall(0)
+		assert.Equal(s.T(), `UPDATE "DB"."PUBLIC"."TABLENAME" as t SET t."DEFAULT" = true WHERE t."DEFAULT" IS NULL;`, backfillSQL)
+
+		commentSQL, _ := s.fakeStageStore.ExecArgsForCall(1)
+		assert.Equal(s.T(), `COMMENT ON COLUMN "DB"."PUBLIC"."TABLENAME"."DEFAULT" IS '{"backfilled": true}';`, commentSQL)
+	})
 }
 
 // generateTableData - returns tableName and tableData
@@ -165,41 +163,47 @@ func (s *SnowflakeTestSuite) TestPrepareTempTable() {
 	sflkTc := s.stageStore.GetConfigMap().GetTableConfig(tempTableID)
 
 	{
-		assert.NoError(s.T(), s.stageStore.PrepareTemporaryTable(context.Background(), tableData, sflkTc, tempTableID, tempTableID, types.AdditionalSettings{}, true))
-		assert.Equal(s.T(), 2, s.fakeStageStore.ExecCallCount())
-		assert.Equal(s.T(), 1, s.fakeStageStore.ExecContextCallCount())
+		assert.NoError(s.T(), s.stageStore.PrepareTemporaryTable(s.T().Context(), tableData, sflkTc, tempTableID, tempTableID, types.AdditionalSettings{}, true))
+		assert.Equal(s.T(), 0, s.fakeStageStore.ExecCallCount())
+		assert.Equal(s.T(), 3, s.fakeStageStore.ExecContextCallCount())
 
 		// First call is to create the temp table
 		_, createQuery, _ := s.fakeStageStore.ExecContextArgsForCall(0)
 
 		prefixQuery := fmt.Sprintf(
-			`CREATE TABLE IF NOT EXISTS %s ("USER_ID" string,"FIRST_NAME" string,"LAST_NAME" string,"DUSTY" string) DATA_RETENTION_TIME_IN_DAYS = 0 STAGE_COPY_OPTIONS = ( PURGE = TRUE ) STAGE_FILE_FORMAT = ( TYPE = 'csv' FIELD_DELIMITER= '\t' FIELD_OPTIONALLY_ENCLOSED_BY='"' NULL_IF='\\N' EMPTY_FIELD_AS_NULL=FALSE)`, tempTableName)
+			`CREATE TABLE IF NOT EXISTS %s ("USER_ID" string,"FIRST_NAME" string,"LAST_NAME" string,"DUSTY" string) DATA_RETENTION_TIME_IN_DAYS = 0 STAGE_COPY_OPTIONS = ( PURGE = TRUE ) STAGE_FILE_FORMAT = ( TYPE = 'csv' FIELD_DELIMITER= '\t' FIELD_OPTIONALLY_ENCLOSED_BY='"' NULL_IF='__artie_null_value' EMPTY_FIELD_AS_NULL=FALSE)`, tempTableName)
 		containsPrefix := strings.HasPrefix(createQuery, prefixQuery)
 		assert.True(s.T(), containsPrefix, fmt.Sprintf("createQuery:%v, prefixQuery:%s", createQuery, prefixQuery))
 		resourceName := addPrefixToTableName(tempTableID, "%")
 		// Second call is a PUT
-		putQuery, _ := s.fakeStageStore.ExecArgsForCall(0)
-		assert.Contains(s.T(), putQuery, "PUT file://", putQuery)
-		assert.Contains(s.T(), putQuery, fmt.Sprintf("@%s AUTO_COMPRESS=TRUE", resourceName))
+
+		stagingTableID := tempTableID.WithTable("%" + tempTableID.Table())
+		_, putQuery, _ := s.fakeStageStore.ExecContextArgsForCall(1)
+		assert.Equal(s.T(),
+			fmt.Sprintf(`PUT 'file://%s' @"DATABASE"."SCHEMA".%s AUTO_COMPRESS=TRUE`,
+				filepath.Join(os.TempDir(), fmt.Sprintf("%s.csv", strings.ReplaceAll(tempTableName, `"`, ""))),
+				stagingTableID.EscapedTable(),
+			), putQuery)
 		// Third call is a COPY INTO
-		copyQuery, _ := s.fakeStageStore.ExecArgsForCall(1)
-		assert.Equal(s.T(), fmt.Sprintf(`COPY INTO %s ("USER_ID","FIRST_NAME","LAST_NAME","DUSTY") FROM (SELECT $1,$2,$3,$4 FROM @%s)`,
-			tempTableName, resourceName), copyQuery)
+		_, copyQuery, _ := s.fakeStageStore.ExecContextArgsForCall(2)
+		assert.Equal(s.T(), fmt.Sprintf(`COPY INTO %s ("USER_ID","FIRST_NAME","LAST_NAME","DUSTY") FROM (SELECT $1,$2,$3,$4 FROM @%s) FILES = ('%s.csv.gz')`,
+			tempTableName, resourceName, strings.ReplaceAll(tempTableName, `"`, "")), copyQuery)
 	}
 	{
 		// Don't create the temporary table.
-		assert.NoError(s.T(), s.stageStore.PrepareTemporaryTable(context.Background(), tableData, sflkTc, tempTableID, tempTableID, types.AdditionalSettings{}, false))
-		assert.Equal(s.T(), 4, s.fakeStageStore.ExecCallCount())
-		assert.Equal(s.T(), 1, s.fakeStageStore.ExecContextCallCount())
+		assert.NoError(s.T(), s.stageStore.PrepareTemporaryTable(s.T().Context(), tableData, sflkTc, tempTableID, tempTableID, types.AdditionalSettings{}, false))
+		assert.Equal(s.T(), 0, s.fakeStageStore.ExecCallCount())
+		assert.Equal(s.T(), 5, s.fakeStageStore.ExecContextCallCount())
 	}
 }
 
 func (s *SnowflakeTestSuite) TestLoadTemporaryTable() {
 	tempTableID, tableData := generateTableData(100)
-	fp, err := s.stageStore.writeTemporaryTableFile(tableData, tempTableID)
+	file, err := s.stageStore.writeTemporaryTableFile(tableData, tempTableID)
+	assert.Equal(s.T(), fmt.Sprintf("%s.csv", strings.ReplaceAll(tempTableID.FullyQualifiedName(), `"`, "")), file.FileName)
 	assert.NoError(s.T(), err)
 	// Read the CSV and confirm.
-	csvfile, err := os.Open(fp)
+	csvfile, err := os.Open(file.FilePath)
 	assert.NoError(s.T(), err)
 	// Parse the file
 	r := csv.NewReader(csvfile)
@@ -231,5 +235,5 @@ func (s *SnowflakeTestSuite) TestLoadTemporaryTable() {
 	assert.Len(s.T(), seenLastName, int(tableData.NumberOfRows()))
 
 	// Delete the file.
-	assert.NoError(s.T(), os.RemoveAll(fp))
+	assert.NoError(s.T(), os.RemoveAll(file.FilePath))
 }

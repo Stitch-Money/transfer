@@ -4,7 +4,7 @@ import (
 	"cmp"
 	"fmt"
 	"log/slog"
-	"slices"
+	"sort"
 	"strings"
 	"time"
 
@@ -23,24 +23,31 @@ import (
 )
 
 type Event struct {
-	Table         string
-	PrimaryKeyMap map[string]any
-	Data          map[string]any // json serialized column data
+	Table string
+	Data  map[string]any // json serialized column data
 
 	OptionalSchema map[string]typing.KindDetails
 	Columns        *columns.Columns
 	Deleted        bool
+
+	// private metadata:
+	primaryKeys []string
 
 	// When the database event was executed
 	executionTime time.Time
 	mode          config.Mode
 }
 
-func hashData(data map[string]any, tc kafkalib.TopicConfig) map[string]any {
+func transformData(data map[string]any, tc kafkalib.TopicConfig) map[string]any {
 	for _, columnToHash := range tc.ColumnsToHash {
 		if value, isOk := data[columnToHash]; isOk {
 			data[columnToHash] = cryptography.HashValue(value)
 		}
+	}
+
+	// Exclude certain columns
+	for _, col := range tc.ColumnsToExclude {
+		delete(data, col)
 	}
 
 	return data
@@ -52,11 +59,20 @@ func ToMemoryEvent(event cdc.Event, pkMap map[string]any, tc kafkalib.TopicConfi
 		return Event{}, err
 	}
 	// Now iterate over pkMap and tag each column that is a primary key
+	var pks []string
+	if len(tc.PrimaryKeysOverride) > 0 {
+		pks = tc.PrimaryKeysOverride
+	} else {
+		for pk := range pkMap {
+			pks = append(pks, pk)
+		}
+	}
+
 	if cols != nil {
-		for primaryKey := range pkMap {
+		for _, pk := range pks {
 			err = cols.UpsertColumn(
 				// We need to escape the column name similar to have parity with event.GetColumns()
-				columns.EscapeName(primaryKey),
+				columns.EscapeName(pk),
 				columns.UpsertColumnArg{
 					PrimaryKey: typing.ToPtr(true),
 				},
@@ -68,7 +84,7 @@ func ToMemoryEvent(event cdc.Event, pkMap map[string]any, tc kafkalib.TopicConfi
 		}
 	}
 
-	evtData, err := event.GetData(pkMap, tc)
+	evtData, err := event.GetData(tc)
 	if err != nil {
 		return Event{}, err
 	}
@@ -92,14 +108,16 @@ func ToMemoryEvent(event cdc.Event, pkMap map[string]any, tc kafkalib.TopicConfi
 		return Event{}, err
 	}
 
+	sort.Strings(pks)
 	_event := Event{
-		executionTime:  event.GetExecutionTime(),
-		mode:           cfgMode,
+		executionTime: event.GetExecutionTime(),
+		mode:          cfgMode,
+		// [primaryKeys] needs to be sorted so that we have a deterministic way to identify a row in our in-memory db.
+		primaryKeys:    pks,
 		Table:          tblName,
-		PrimaryKeyMap:  pkMap,
 		OptionalSchema: optionalSchema,
 		Columns:        cols,
-		Data:           hashData(evtData, tc),
+		Data:           transformData(evtData, tc),
 		Deleted:        event.DeletePayload(),
 	}
 
@@ -123,8 +141,8 @@ func (e *Event) Validate() error {
 		return fmt.Errorf("table name is empty")
 	}
 
-	if len(e.PrimaryKeyMap) == 0 {
-		return fmt.Errorf("primary key map is empty")
+	if len(e.primaryKeys) == 0 {
+		return fmt.Errorf("primary keys are empty")
 	}
 
 	if len(e.Data) == 0 {
@@ -144,27 +162,24 @@ func (e *Event) Validate() error {
 	return nil
 }
 
-// PrimaryKeys is returned in a sorted manner to be safe.
-// We use PrimaryKeyValue() as our internal identifier within our db
-// It is critical to make sure `PrimaryKeyValue()` is a deterministic call.
-func (e *Event) PrimaryKeys() []string {
-	var keys []string
-	for key := range e.PrimaryKeyMap {
-		keys = append(keys, key)
-	}
-
-	slices.Sort(keys)
-	return keys
+func (e *Event) GetPrimaryKeys() []string {
+	return e.primaryKeys
 }
 
 // PrimaryKeyValue - as per above, this needs to return a deterministic k/v string.
-func (e *Event) PrimaryKeyValue() string {
+func (e *Event) PrimaryKeyValue() (string, error) {
 	var key string
-	for _, pk := range e.PrimaryKeys() {
-		key += fmt.Sprintf("%s=%v", pk, e.PrimaryKeyMap[pk])
+	for _, pk := range e.GetPrimaryKeys() {
+		escapedPrimaryKey := columns.EscapeName(pk)
+		value, ok := e.Data[escapedPrimaryKey]
+		if !ok {
+			return "", fmt.Errorf("primary key %q not found in data: %v", escapedPrimaryKey, e.Data)
+		}
+
+		key += fmt.Sprintf("%s=%v", escapedPrimaryKey, value)
 	}
 
-	return key
+	return key, nil
 }
 
 // Save will save the event into our in memory event
@@ -184,7 +199,7 @@ func (e *Event) Save(cfg config.Config, inMemDB *models.DatabaseData, tc kafkali
 			cols = e.Columns
 		}
 
-		td.SetTableData(optimization.NewTableData(cols, cfg.Mode, e.PrimaryKeys(), tc, e.Table))
+		td.SetTableData(optimization.NewTableData(cols, cfg.Mode, e.GetPrimaryKeys(), tc, e.Table))
 	} else {
 		if e.Columns != nil {
 			// Iterate over this again just in case.
@@ -264,7 +279,13 @@ func (e *Event) Save(cfg config.Config, inMemDB *models.DatabaseData, tc kafkali
 
 	// Swap out sanitizedData <> data.
 	e.Data = sanitizedData
-	td.InsertRow(e.PrimaryKeyValue(), e.Data, e.Deleted)
+
+	pkValueString, err := e.PrimaryKeyValue()
+	if err != nil {
+		return false, "", fmt.Errorf("failed to retrieve primary key value: %w", err)
+	}
+
+	td.InsertRow(pkValueString, e.Data, e.Deleted)
 	// If the message is Kafka, then we only need the latest one
 	if message.Kind() == artie.Kafka {
 		td.PartitionsToLastMessage[message.Partition()] = message

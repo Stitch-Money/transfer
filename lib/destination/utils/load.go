@@ -1,10 +1,12 @@
 package utils
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/artie-labs/transfer/clients/bigquery"
 	"github.com/artie-labs/transfer/clients/databricks"
+	"github.com/artie-labs/transfer/clients/iceberg"
 	"github.com/artie-labs/transfer/clients/mssql"
 	"github.com/artie-labs/transfer/clients/redshift"
 	"github.com/artie-labs/transfer/clients/s3"
@@ -16,10 +18,10 @@ import (
 )
 
 func IsOutputBaseline(cfg config.Config) bool {
-	return cfg.Output == constants.S3
+	return cfg.Output == constants.S3 || cfg.Output == constants.Iceberg
 }
 
-func LoadBaseline(cfg config.Config) (destination.Baseline, error) {
+func LoadBaseline(ctx context.Context, cfg config.Config) (destination.Baseline, error) {
 	switch cfg.Output {
 	case constants.S3:
 		store, err := s3.LoadStore(cfg)
@@ -28,24 +30,30 @@ func LoadBaseline(cfg config.Config) (destination.Baseline, error) {
 		}
 
 		return store, nil
+	case constants.Iceberg:
+		store, err := iceberg.LoadStore(ctx, cfg)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load Iceberg: %w", err)
+		}
+		return store, nil
 	}
 
 	return nil, fmt.Errorf("invalid baseline output source specified: %q", cfg.Output)
 }
 
-func LoadDataWarehouse(cfg config.Config, store *db.Store) (destination.DataWarehouse, error) {
+func LoadDestination(ctx context.Context, cfg config.Config, store *db.Store) (destination.Destination, error) {
 	switch cfg.Output {
 	case constants.Snowflake:
 		return snowflake.LoadSnowflake(cfg, store)
 	case constants.BigQuery:
-		return bigquery.LoadBigQuery(cfg, store)
+		return bigquery.LoadBigQuery(ctx, cfg, store)
 	case constants.Databricks:
 		return databricks.LoadStore(cfg)
 	case constants.MSSQL:
 		return mssql.LoadStore(cfg)
 	case constants.Redshift:
-		return redshift.LoadRedshift(cfg, store)
+		return redshift.LoadRedshift(ctx, cfg, store)
 	}
 
-	return nil, fmt.Errorf("invalid data warehouse output source specified: %q", cfg.Output)
+	return nil, fmt.Errorf("invalid destination: %q", cfg.Output)
 }

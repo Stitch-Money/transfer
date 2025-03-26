@@ -21,6 +21,10 @@ import (
 	"github.com/artie-labs/transfer/processes/pool"
 )
 
+var (
+	version = "dev" // this will be set by the goreleaser configuration to appropriate value for the compiled binary.
+)
+
 func main() {
 	// Parse args into settings
 	settings, err := config.LoadSettings(os.Args, true)
@@ -29,7 +33,7 @@ func main() {
 	}
 
 	// Initialize default logger
-	_logger, cleanUpHandlers := logger.NewLogger(settings.VerboseLogging, settings.Config.Reporting.Sentry)
+	_logger, cleanUpHandlers := logger.NewLogger(settings.VerboseLogging, settings.Config.Reporting.Sentry, version)
 	slog.SetDefault(_logger)
 
 	defer cleanUpHandlers()
@@ -61,22 +65,24 @@ func main() {
 	metricsClient := metrics.LoadExporter(settings.Config)
 	var dest destination.Baseline
 	if utils.IsOutputBaseline(settings.Config) {
-		dest, err = utils.LoadBaseline(settings.Config)
+		dest, err = utils.LoadBaseline(ctx, settings.Config)
 		if err != nil {
 			logger.Fatal("Unable to load baseline destination", slog.Any("err", err))
 		}
 	} else {
-		dwh, err := utils.LoadDataWarehouse(settings.Config, nil)
+		_dest, err := utils.LoadDestination(ctx, settings.Config, nil)
 		if err != nil {
-			logger.Fatal("Unable to load data warehouse destination", slog.Any("err", err))
+			logger.Fatal("Unable to load destination", slog.Any("err", err))
 		}
 
-		if err = dwh.SweepTemporaryTables(ctx); err != nil {
+		if err = _dest.SweepTemporaryTables(ctx); err != nil {
 			logger.Fatal("Failed to clean up temporary tables", slog.Any("err", err))
 		}
 
-		dest = dwh
+		dest = _dest
 	}
+
+	slog.Info("Starting...", slog.String("version", version))
 
 	inMemDB := models.NewMemoryDB()
 

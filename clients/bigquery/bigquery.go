@@ -147,7 +147,7 @@ func (s *Store) IdentifierFor(topicConfig kafkalib.TopicConfig, table string) sq
 
 func (s *Store) GetTableConfig(tableID sql.TableIdentifier, dropDeletedColumns bool) (*types.DestinationTableConfig, error) {
 	return shared.GetTableCfgArgs{
-		Dwh:                   s,
+		Destination:           s,
 		TableID:               tableID,
 		ConfigMap:             s.configMap,
 		ColumnNameForName:     "column_name",
@@ -223,7 +223,7 @@ func (s *Store) putTable(ctx context.Context, bqTableID dialect.TableIdentifier,
 		return bytes, nil
 	}
 
-	return batch.BySize(tableData.Rows(), maxRequestByteSize, false, encoder, func(chunk [][]byte) error {
+	return batch.BySize(tableData.Rows(), maxRequestByteSize, false, encoder, func(chunk [][]byte, _ []map[string]any) error {
 		result, err := managedStream.AppendRows(ctx, chunk)
 		if err != nil {
 			return fmt.Errorf("failed to append rows: %w", err)
@@ -261,7 +261,7 @@ func (s *Store) SweepTemporaryTables(_ context.Context) error {
 	return nil
 }
 
-func LoadBigQuery(cfg config.Config, _store *db.Store) (*Store, error) {
+func LoadBigQuery(ctx context.Context, cfg config.Config, _store *db.Store) (*Store, error) {
 	if _store != nil {
 		// Used for tests.
 		return &Store{
@@ -280,7 +280,7 @@ func LoadBigQuery(cfg config.Config, _store *db.Store) (*Store, error) {
 		}
 	}
 
-	bqClient, err := bigquery.NewClient(context.Background(), cfg.BigQuery.ProjectID,
+	bqClient, err := bigquery.NewClient(ctx, cfg.BigQuery.ProjectID,
 		option.WithCredentialsFile(os.Getenv(GooglePathToCredentialsEnvKey)),
 	)
 	if err != nil {

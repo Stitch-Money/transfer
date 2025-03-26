@@ -1,8 +1,9 @@
 package snowflake
 
 import (
-	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -23,6 +24,17 @@ import (
 	"github.com/artie-labs/transfer/lib/typing/columns"
 )
 
+func retrieveTableNameFromCreateTable(t *testing.T, query string) string {
+	t.Helper()
+	parts := strings.Split(query, ".")
+	assert.Len(t, parts, 3)
+
+	tableNamePart := parts[2]
+	tableNameParts := strings.Split(tableNamePart, " ")
+	assert.True(t, len(tableNameParts) > 2, tableNamePart)
+	return strings.ReplaceAll(tableNameParts[0], `"`, "")
+}
+
 func (s *SnowflakeTestSuite) identifierFor(tableData *optimization.TableData) sql.TableIdentifier {
 	return s.stageStore.IdentifierFor(tableData.TopicConfig(), tableData.Name())
 }
@@ -32,7 +44,7 @@ func (s *SnowflakeTestSuite) TestDropTable() {
 	tableID := s.identifierFor(tableData)
 	{
 		// Deleting without disabling drop protection
-		assert.ErrorContains(s.T(), s.stageStore.DropTable(context.Background(), tableID), "not allowed to be dropped")
+		assert.ErrorContains(s.T(), s.stageStore.DropTable(s.T().Context(), tableID), "not allowed to be dropped")
 	}
 	{
 		// Deleting with disabling drop protection
@@ -40,11 +52,11 @@ func (s *SnowflakeTestSuite) TestDropTable() {
 		assert.True(s.T(), ok)
 
 		snowflakeTableID = snowflakeTableID.WithDisableDropProtection(true)
-		assert.NoError(s.T(), s.stageStore.DropTable(context.Background(), snowflakeTableID))
+		assert.NoError(s.T(), s.stageStore.DropTable(s.T().Context(), snowflakeTableID))
 
 		// Check store to see it drop
 		_, query, _ := s.fakeStageStore.ExecContextArgsForCall(0)
-		assert.Equal(s.T(), query, `DROP TABLE IF EXISTS customer.public."__ARTIE_FOO"`)
+		assert.Equal(s.T(), query, `DROP TABLE IF EXISTS "CUSTOMER"."PUBLIC"."__ARTIE_FOO"`)
 		// Cache should be empty as well.
 		assert.Nil(s.T(), s.stageStore.configMap.GetTableConfig(snowflakeTableID))
 	}
@@ -102,7 +114,7 @@ func (s *SnowflakeTestSuite) TestExecuteMergeNilEdgeCase() {
 
 	s.stageStore.configMap.AddTable(s.identifierFor(tableData), types.NewDestinationTableConfig(anotherCols, true))
 
-	commitTx, err := s.stageStore.Merge(context.Background(), tableData)
+	commitTx, err := s.stageStore.Merge(s.T().Context(), tableData)
 	assert.NoError(s.T(), err)
 	assert.True(s.T(), commitTx)
 
@@ -149,14 +161,22 @@ func (s *SnowflakeTestSuite) TestExecuteMergeReestablishAuth() {
 	}
 
 	s.stageStore.configMap.AddTable(s.identifierFor(tableData), types.NewDestinationTableConfig(cols.GetColumns(), true))
-	commitTx, err := s.stageStore.Merge(context.Background(), tableData)
+	commitTx, err := s.stageStore.Merge(s.T().Context(), tableData)
 	assert.NoError(s.T(), err)
 	assert.True(s.T(), commitTx)
-	assert.Equal(s.T(), 4, s.fakeStageStore.ExecCallCount())
-	assert.Equal(s.T(), 1, s.fakeStageStore.ExecContextCallCount())
+	assert.Equal(s.T(), 2, s.fakeStageStore.ExecCallCount())
+	assert.Equal(s.T(), 3, s.fakeStageStore.ExecContextCallCount())
 }
 
 func (s *SnowflakeTestSuite) TestExecuteMerge() {
+	colNames := []string{
+		"id",
+		"name",
+		constants.DeleteColumnMarker,
+		constants.OnlySetDeleteColumnMarker,
+		"created_at",
+	}
+
 	colToKindDetailsMap := map[string]typing.KindDetails{
 		"id":                                typing.Integer,
 		"name":                              typing.String,
@@ -167,8 +187,11 @@ func (s *SnowflakeTestSuite) TestExecuteMerge() {
 	}
 
 	var cols columns.Columns
-	for colName, colKind := range colToKindDetailsMap {
-		cols.AddColumn(columns.NewColumn(colName, colKind))
+	for _, colName := range colNames {
+		kd, ok := colToKindDetailsMap[colName]
+		assert.True(s.T(), ok, colName)
+
+		cols.AddColumn(columns.NewColumn(colName, kd))
 	}
 
 	rowsData := make(map[string]map[string]any)
@@ -198,33 +221,32 @@ func (s *SnowflakeTestSuite) TestExecuteMerge() {
 	tableID := s.identifierFor(tableData)
 	fqName := tableID.FullyQualifiedName()
 	s.stageStore.configMap.AddTable(tableID, types.NewDestinationTableConfig(cols.GetColumns(), true))
-	commitTx, err := s.stageStore.Merge(context.Background(), tableData)
+	commitTx, err := s.stageStore.Merge(s.T().Context(), tableData)
 	assert.NoError(s.T(), err)
 	assert.True(s.T(), commitTx)
 	s.fakeStageStore.ExecReturns(nil, nil)
-	// CREATE TABLE IF NOT EXISTS customer.public.orders___artie_Mwv9YADmRy (id int,name string,__artie_delete boolean,created_at timestamp_tz) STAGE_COPY_OPTIONS = ( PURGE = TRUE ) STAGE_FILE_FORMAT = ( TYPE = 'csv' FIELD_DELIMITER= '\t' FIELD_OPTIONALLY_ENCLOSED_BY='"' NULL_IF='\\N' EMPTY_FIELD_AS_NULL=FALSE) COMMENT='expires:2023-06-27 11:54:03 UTC'
+	// CREATE TABLE IF NOT EXISTS customer.public.orders___artie_Mwv9YADmRy (id int,name string,__artie_delete boolean,created_at timestamp_tz) STAGE_COPY_OPTIONS = ( PURGE = TRUE ) STAGE_FILE_FORMAT = ( TYPE = 'csv' FIELD_DELIMITER= '\t' FIELD_OPTIONALLY_ENCLOSED_BY='"' NULL_IF='__artie_null_value' EMPTY_FIELD_AS_NULL=FALSE) COMMENT='expires:2023-06-27 11:54:03 UTC'
 	_, createQuery, _ := s.fakeStageStore.ExecContextArgsForCall(0)
-	assert.Contains(s.T(), createQuery, `customer.public."ORDERS___ARTIE_`, fmt.Sprintf("query: %v, destKind: %v", createQuery, constants.Snowflake))
+	tableName := retrieveTableNameFromCreateTable(s.T(), createQuery)
+	assert.Equal(s.T(), fmt.Sprintf(`CREATE TABLE IF NOT EXISTS "CUSTOMER"."PUBLIC"."%s" ("ID" int,"NAME" string,"__ARTIE_DELETE" boolean,"__ARTIE_ONLY_SET_DELETE" boolean,"CREATED_AT" string) DATA_RETENTION_TIME_IN_DAYS = 0 STAGE_COPY_OPTIONS = ( PURGE = TRUE ) STAGE_FILE_FORMAT = ( TYPE = 'csv' FIELD_DELIMITER= '\t' FIELD_OPTIONALLY_ENCLOSED_BY='"' NULL_IF='__artie_null_value' EMPTY_FIELD_AS_NULL=FALSE)`, tableName), createQuery)
 
-	// PUT file:///tmp/customer.public.orders___artie_Mwv9YADmRy.csv @customer.public.%orders___artie_Mwv9YADmRy AUTO_COMPRESS=TRUE
-	putQuery, _ := s.fakeStageStore.ExecArgsForCall(0)
-	assert.Contains(s.T(), putQuery, "PUT file://")
+	// PUT file:///tmp/CUSTOMER.PUBLIC.orders.csv @"CUSTOMER"."PUBLIC"."%%orders" AUTO_COMPRESS=TRUE
+	_, putQuery, _ := s.fakeStageStore.ExecContextArgsForCall(1)
+	assert.Equal(s.T(), fmt.Sprintf(`PUT 'file://%s' @"CUSTOMER"."PUBLIC"."%%%s" AUTO_COMPRESS=TRUE`, filepath.Join(os.TempDir(), fmt.Sprintf("CUSTOMER.PUBLIC.%s.csv", tableName)), tableName), putQuery)
 
 	// COPY INTO customer.public.orders___artie_Mwv9YADmRy (id,name,__artie_delete,created_at) FROM (SELECT $1,$2,$3,$4 FROM @customer.public.%orders___artie_Mwv9YADmRy
-	copyQuery, _ := s.fakeStageStore.ExecArgsForCall(1)
-	assert.Contains(s.T(), copyQuery, `COPY INTO customer.public."ORDERS___ARTIE_`, fmt.Sprintf("query: %v, destKind: %v", copyQuery, constants.Snowflake))
-	assert.Contains(s.T(), copyQuery, fmt.Sprintf("FROM %s", "@customer.public.\"%ORDERS___ARTIE_"), fmt.Sprintf("query: %v, destKind: %v", copyQuery, constants.Snowflake))
+	_, copyQuery, _ := s.fakeStageStore.ExecContextArgsForCall(2)
+	assert.Equal(s.T(), fmt.Sprintf(`COPY INTO "CUSTOMER"."PUBLIC"."%s" ("ID","NAME","__ARTIE_DELETE","__ARTIE_ONLY_SET_DELETE","CREATED_AT") FROM (SELECT $1,$2,$3,$4,$5 FROM @"CUSTOMER"."PUBLIC"."%%%s") FILES = ('CUSTOMER.PUBLIC.%s.csv.gz')`, tableName, tableName, tableName), copyQuery)
 
-	mergeQuery, _ := s.fakeStageStore.ExecArgsForCall(2)
+	mergeQuery, _ := s.fakeStageStore.ExecArgsForCall(0)
 	assert.Contains(s.T(), mergeQuery, fmt.Sprintf("MERGE INTO %s", fqName), fmt.Sprintf("query: %v, destKind: %v", mergeQuery, constants.Snowflake))
 
 	// Drop a table now.
-	dropQuery, _ := s.fakeStageStore.ExecArgsForCall(3)
-	assert.Contains(s.T(), dropQuery, `DROP TABLE IF EXISTS customer.public."ORDERS___ARTIE_`,
-		fmt.Sprintf("query: %v, destKind: %v", dropQuery, constants.Snowflake))
+	dropQuery, _ := s.fakeStageStore.ExecArgsForCall(1)
+	assert.Equal(s.T(), fmt.Sprintf(`DROP TABLE IF EXISTS "CUSTOMER"."PUBLIC"."%s"`, tableName), dropQuery)
 
-	assert.Equal(s.T(), 4, s.fakeStageStore.ExecCallCount())
-	assert.Equal(s.T(), 1, s.fakeStageStore.ExecContextCallCount())
+	assert.Equal(s.T(), 2, s.fakeStageStore.ExecCallCount())
+	assert.Equal(s.T(), 3, s.fakeStageStore.ExecContextCallCount())
 }
 
 // TestExecuteMergeDeletionFlagRemoval is going to run execute merge twice.
@@ -284,12 +306,12 @@ func (s *SnowflakeTestSuite) TestExecuteMergeDeletionFlagRemoval() {
 	_config := types.NewDestinationTableConfig(sflkCols.GetColumns(), true)
 	s.stageStore.configMap.AddTable(s.identifierFor(tableData), _config)
 
-	commitTx, err := s.stageStore.Merge(context.Background(), tableData)
+	commitTx, err := s.stageStore.Merge(s.T().Context(), tableData)
 	assert.NoError(s.T(), err)
 	assert.True(s.T(), commitTx)
 	s.fakeStageStore.ExecReturns(nil, nil)
-	assert.Equal(s.T(), 4, s.fakeStageStore.ExecCallCount())
-	assert.Equal(s.T(), 1, s.fakeStageStore.ExecContextCallCount())
+	assert.Equal(s.T(), 2, s.fakeStageStore.ExecCallCount())
+	assert.Equal(s.T(), 3, s.fakeStageStore.ExecContextCallCount())
 
 	// Check the temp deletion table now.
 	assert.Equal(s.T(), len(s.stageStore.configMap.GetTableConfig(s.identifierFor(tableData)).ReadOnlyColumnsToDelete()), 1,
@@ -310,12 +332,12 @@ func (s *SnowflakeTestSuite) TestExecuteMergeDeletionFlagRemoval() {
 		break
 	}
 
-	commitTx, err = s.stageStore.Merge(context.Background(), tableData)
+	commitTx, err = s.stageStore.Merge(s.T().Context(), tableData)
 	assert.NoError(s.T(), err)
 	assert.True(s.T(), commitTx)
 	s.fakeStageStore.ExecReturns(nil, nil)
-	assert.Equal(s.T(), 8, s.fakeStageStore.ExecCallCount())
-	assert.Equal(s.T(), 2, s.fakeStageStore.ExecContextCallCount())
+	assert.Equal(s.T(), 4, s.fakeStageStore.ExecCallCount())
+	assert.Equal(s.T(), 6, s.fakeStageStore.ExecContextCallCount())
 
 	// Caught up now, so columns should be 0.
 	assert.Len(s.T(), s.stageStore.configMap.GetTableConfig(s.identifierFor(tableData)).ReadOnlyColumnsToDelete(), 0)
@@ -323,7 +345,7 @@ func (s *SnowflakeTestSuite) TestExecuteMergeDeletionFlagRemoval() {
 
 func (s *SnowflakeTestSuite) TestExecuteMergeExitEarly() {
 	tableData := optimization.NewTableData(nil, config.Replication, nil, kafkalib.TopicConfig{}, "foo")
-	commitTx, err := s.stageStore.Merge(context.Background(), tableData)
+	commitTx, err := s.stageStore.Merge(s.T().Context(), tableData)
 	assert.NoError(s.T(), err)
 	assert.True(s.T(), commitTx)
 }
@@ -360,5 +382,5 @@ func TestTempTableIDWithSuffix(t *testing.T) {
 	tableData := optimization.NewTableData(nil, config.Replication, nil, kafkalib.TopicConfig{Database: "db", Schema: "schema"}, "table")
 	tableID := (&Store{}).IdentifierFor(tableData.TopicConfig(), tableData.Name())
 	tempTableName := shared.TempTableIDWithSuffix(tableID, "sUfFiX").FullyQualifiedName()
-	assert.Equal(t, `db.schema."TABLE___ARTIE_SUFFIX"`, trimTTL(tempTableName))
+	assert.Equal(t, `"DB"."SCHEMA"."TABLE___ARTIE_SUFFIX"`, trimTTL(tempTableName))
 }

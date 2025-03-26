@@ -23,7 +23,7 @@ func (d *DDLTestSuite) TestCreateTemporaryTable() {
 		tableID := dialect.NewTableIdentifier("db", "schema", "tempTableName")
 		query, err := ddl.BuildCreateTableSQL(config.SharedDestinationColumnSettings{}, d.snowflakeStagesStore.Dialect(), tableID, true, config.Replication, []columns.Column{columns.NewColumn("foo", typing.String), columns.NewColumn("bar", typing.Float), columns.NewColumn("start", typing.String)})
 		assert.NoError(d.T(), err)
-		assert.Equal(d.T(), query, `CREATE TABLE IF NOT EXISTS db.schema."TEMPTABLENAME" ("FOO" string,"BAR" float,"START" string) DATA_RETENTION_TIME_IN_DAYS = 0 STAGE_COPY_OPTIONS = ( PURGE = TRUE ) STAGE_FILE_FORMAT = ( TYPE = 'csv' FIELD_DELIMITER= '\t' FIELD_OPTIONALLY_ENCLOSED_BY='"' NULL_IF='\\N' EMPTY_FIELD_AS_NULL=FALSE)`)
+		assert.Equal(d.T(), query, `CREATE TABLE IF NOT EXISTS "DB"."SCHEMA"."TEMPTABLENAME" ("FOO" string,"BAR" float,"START" string) DATA_RETENTION_TIME_IN_DAYS = 0 STAGE_COPY_OPTIONS = ( PURGE = TRUE ) STAGE_FILE_FORMAT = ( TYPE = 'csv' FIELD_DELIMITER= '\t' FIELD_OPTIONALLY_ENCLOSED_BY='"' NULL_IF='__artie_null_value' EMPTY_FIELD_AS_NULL=FALSE)`)
 	}
 	{
 		// BigQuery
@@ -42,7 +42,7 @@ func (d *DDLTestSuite) Test_DropTemporaryTableCaseSensitive() {
 		"gghh",
 	}
 
-	for i, dest := range []destination.DataWarehouse{d.bigQueryStore, d.snowflakeStagesStore} {
+	for i, dest := range []destination.Destination{d.bigQueryStore, d.snowflakeStagesStore} {
 		var fakeStore *mocks.FakeStore
 		if i == 0 {
 			fakeStore = d.fakeBigQueryStore
@@ -77,7 +77,7 @@ func (d *DDLTestSuite) Test_DropTemporaryTable() {
 		assert.Equal(d.T(), 0, d.fakeSnowflakeStagesStore.ExecCallCount())
 	}
 
-	for i, _dwh := range []destination.DataWarehouse{d.bigQueryStore, d.snowflakeStagesStore} {
+	for i, _dwh := range []destination.Destination{d.bigQueryStore, d.snowflakeStagesStore} {
 		var fakeStore *mocks.FakeStore
 		if i == 0 {
 			fakeStore = d.fakeBigQueryStore
@@ -115,7 +115,7 @@ func (d *DDLTestSuite) Test_DropTemporaryTable_Errors() {
 	}
 
 	randomErr := fmt.Errorf("random err")
-	for i, _dwh := range []destination.DataWarehouse{d.bigQueryStore, d.snowflakeStagesStore} {
+	for i, _dwh := range []destination.Destination{d.bigQueryStore, d.snowflakeStagesStore} {
 		var fakeStore *mocks.FakeStore
 		if i == 0 {
 			fakeStore = d.fakeBigQueryStore
