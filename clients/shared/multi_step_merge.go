@@ -31,8 +31,8 @@ func MultiStepMerge(ctx context.Context, dest destination.Destination, tableData
 		return false, nil
 	}
 
-	msmTableID := dest.IdentifierFor(tableData.TopicConfig(), fmt.Sprintf("%s_%s_msm", constants.ArtiePrefix, tableData.Name()))
-	targetTableID := dest.IdentifierFor(tableData.TopicConfig(), tableData.Name())
+	msmTableID := dest.IdentifierFor(tableData.TopicConfig().BuildDatabaseAndSchemaPair(), fmt.Sprintf("%s_%s_msm", constants.ArtiePrefix, tableData.Name()))
+	targetTableID := dest.IdentifierFor(tableData.TopicConfig().BuildDatabaseAndSchemaPair(), tableData.Name())
 	targetTableConfig, err := dest.GetTableConfig(targetTableID, tableData.TopicConfig().DropDeletedColumns)
 	if err != nil {
 		return false, fmt.Errorf("failed to get table config: %w", err)
@@ -135,7 +135,7 @@ func MultiStepMerge(ctx context.Context, dest destination.Destination, tableData
 
 func merge(ctx context.Context, dwh destination.Destination, tableData *optimization.TableData, tableConfig *types.DestinationTableConfig, temporaryTableID sql.TableIdentifier, targetTableID sql.TableIdentifier, opts types.MergeOpts) error {
 	defer func() {
-		if dropErr := ddl.DropTemporaryTable(dwh, temporaryTableID, false); dropErr != nil {
+		if dropErr := ddl.DropTemporaryTable(ctx, dwh, temporaryTableID, false); dropErr != nil {
 			slog.Warn("Failed to drop temporary table", slog.Any("err", dropErr), slog.String("tableName", temporaryTableID.FullyQualifiedName()))
 		}
 	}()
@@ -212,7 +212,7 @@ func merge(ctx context.Context, dwh destination.Destination, tableData *optimiza
 		mergeStatements = _mergeStatements
 	}
 
-	if err := destination.ExecStatements(dwh, mergeStatements); err != nil {
+	if err := destination.ExecContextStatements(ctx, dwh, mergeStatements); err != nil {
 		return fmt.Errorf("failed to execute merge statements: %w", err)
 	}
 

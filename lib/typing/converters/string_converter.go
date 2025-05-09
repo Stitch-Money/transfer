@@ -105,7 +105,7 @@ func (DateConverter) Convert(value any) (string, error) {
 		return "", fmt.Errorf("failed to cast colVal as date, colVal: '%v', err: %w", value, err)
 	}
 
-	return _time.Format(ext.PostgresDateFormat), nil
+	return _time.Format(time.DateOnly), nil
 }
 
 type TimeConverter struct{}
@@ -207,6 +207,8 @@ func (FloatConverter) Convert(value any) (string, error) {
 		return fmt.Sprint(parsedVal), nil
 	case *decimal.Decimal:
 		return parsedVal.String(), nil
+	case string:
+		return parsedVal, nil
 	default:
 		return "", fmt.Errorf("unexpected value: '%v', type: %T", value, value)
 	}
@@ -240,7 +242,7 @@ func (StructConverter) Convert(value any) (string, error) {
 
 	switch castedValue := (value).(type) {
 	case string:
-		return castedValue, nil
+		return fmt.Sprintf("%q", castedValue), nil
 	default:
 		colValBytes, err := json.Marshal(value)
 		if err != nil {

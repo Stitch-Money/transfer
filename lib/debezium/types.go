@@ -77,6 +77,8 @@ func toInt64(value any) (int64, error) {
 	switch typedValue := value.(type) {
 	case int:
 		return int64(typedValue), nil
+	case int8:
+		return int64(typedValue), nil
 	case int16:
 		return int64(typedValue), nil
 	case int32:
@@ -114,6 +116,8 @@ func (f Field) ShouldSetDefaultValue(defaultValue any) bool {
 		return true
 	case bool, int, int16, int32, int64, float32, float64, *decimal.Decimal:
 		return true
+	case map[string]any, []any:
+		return true
 	default:
 		slog.Warn("Default value that we did not add a case for yet, we're returning true",
 			slog.String("type", fmt.Sprintf("%T", defaultValue)),
@@ -131,7 +135,7 @@ func (f Field) ParseValue(value any) (any, error) {
 
 	// Preprocess [value] to reverse the effects of being JSON marshalled and unmarshalled when passing through Kafka.
 	switch f.Type {
-	case Int16, Int32, Int64:
+	case Int8, Int16, Int32, Int64:
 		var err error
 		value, err = toInt64(value)
 		if err != nil {

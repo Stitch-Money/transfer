@@ -1,8 +1,11 @@
 package shared
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
+	"os"
+	"strconv"
 	"time"
 
 	bigQueryDialect "github.com/artie-labs/transfer/clients/bigquery/dialect"
@@ -29,7 +32,7 @@ func DefaultValue(column columns.Column, dialect sql.Dialect) (any, error) {
 			return nil, fmt.Errorf("failed to cast colVal as time.Time, colVal: '%v', err: %w", column.DefaultValue(), err)
 		}
 
-		return sql.QuoteLiteral(_time.Format(ext.PostgresDateFormat)), nil
+		return sql.QuoteLiteral(_time.Format(time.DateOnly)), nil
 	case typing.Time.Kind:
 		_time, err := ext.ParseTimeFromAny(column.DefaultValue())
 		if err != nil {
@@ -72,7 +75,18 @@ func DefaultValue(column columns.Column, dialect sql.Dialect) (any, error) {
 	return column.DefaultValue(), nil
 }
 
-func BackfillColumn(dest destination.Destination, column columns.Column, tableID sql.TableIdentifier) error {
+func BackfillColumn(ctx context.Context, dest destination.Destination, column columns.Column, tableID sql.TableIdentifier) error {
+	if envVar := os.Getenv("DISABLE_DEFAULT_VAL_BACKFILL"); envVar != "" {
+		disable, err := strconv.ParseBool(envVar)
+		if err != nil {
+			return fmt.Errorf("failed to parse DISABLE_DEFAULT_VAL_BACKFILL: %w", err)
+		}
+
+		if disable {
+			return nil
+		}
+	}
+
 	dialect := dest.Dialect()
 	switch dialect.GetDefaultValueStrategy() {
 	case sql.Backfill:
@@ -103,7 +117,7 @@ func BackfillColumn(dest destination.Destination, column columns.Column, tableID
 			slog.String("table", tableID.FullyQualifiedName()),
 		)
 
-		if _, err = dest.Exec(query); err != nil {
+		if _, err = dest.ExecContext(ctx, query); err != nil {
 			return fmt.Errorf("failed to backfill, err: %w, query: %v", err, query)
 		}
 
@@ -115,7 +129,7 @@ func BackfillColumn(dest destination.Destination, column columns.Column, tableID
 			)
 		}
 
-		_, err = dest.Exec(query)
+		_, err = dest.ExecContext(ctx, query)
 		return err
 	case sql.Native:
 		// TODO: Support native strat

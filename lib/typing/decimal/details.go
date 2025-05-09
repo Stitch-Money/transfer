@@ -17,6 +17,12 @@ type Details struct {
 	precision int32
 }
 
+// TwosComplementByteArrLength - returns the length of the twos complement byte array for the decimal.
+// This is used to determine the length of the byte array for the decimal.
+func (d Details) TwosComplementByteArrLength() int32 {
+	return (d.precision + 1) / 2
+}
+
 func NewDetails(precision int32, scale int32) Details {
 	if precision == 0 {
 		// MySQL, PostgreSQL, and SQLServer do not allow a zero precision, so this should never happen.
@@ -74,9 +80,13 @@ func (d Details) RedshiftKind() string {
 }
 
 // BigQueryKind - is inferring logic from: https://cloud.google.com/bigquery/docs/reference/standard-sql/data-types#decimal_types
-func (d Details) BigQueryKind(numericTypeForVariableNumeric bool) string {
-	if numericTypeForVariableNumeric && d.precision == PrecisionNotSpecified {
-		return "BIGNUMERIC"
+func (d Details) BigQueryKind(useBigNumericForVariableNumeric bool) string {
+	if d.precision == PrecisionNotSpecified {
+		if useBigNumericForVariableNumeric {
+			return "BIGNUMERIC"
+		} else {
+			return "NUMERIC"
+		}
 	}
 
 	if d.isNumeric() {

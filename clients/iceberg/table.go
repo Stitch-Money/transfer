@@ -51,13 +51,7 @@ func (s Store) describeTable(ctx context.Context, tableID sql.TableIdentifier) (
 }
 
 func (s Store) CreateTable(ctx context.Context, tableID sql.TableIdentifier, tableConfig *types.DestinationTableConfig, cols []columns.Column) error {
-	var colParts []string
-	for _, col := range cols {
-		colPart := fmt.Sprintf("%s %s", col.Name(), s.Dialect().DataTypeForKind(col.KindDetails, col.PrimaryKey(), config.SharedDestinationColumnSettings{}))
-		colParts = append(colParts, colPart)
-	}
-
-	if err := s.apacheLivyClient.ExecContext(ctx, s.Dialect().BuildCreateTableQuery(tableID, false, colParts)); err != nil {
+	if err := s.apacheLivyClient.ExecContext(ctx, s.Dialect().BuildCreateTableQuery(tableID, false, s.buildColumnParts(cols))); err != nil {
 		return fmt.Errorf("failed to create table: %w", err)
 	}
 
@@ -113,6 +107,15 @@ func (s Store) DeleteTable(ctx context.Context, tableID sql.TableIdentifier) err
 
 	if err := s.s3TablesAPI.DeleteTable(ctx, castedTableID.Namespace(), castedTableID.Table()); err != nil {
 		return fmt.Errorf("failed to delete table: %w", err)
+	}
+
+	return nil
+}
+
+func (s Store) TruncateTable(ctx context.Context, tableID sql.TableIdentifier) error {
+	query := fmt.Sprintf("TRUNCATE TABLE %s", tableID.FullyQualifiedName())
+	if err := s.apacheLivyClient.ExecContext(ctx, query); err != nil {
+		return fmt.Errorf("failed to truncate table: %w", err)
 	}
 
 	return nil

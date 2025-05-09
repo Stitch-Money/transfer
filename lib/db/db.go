@@ -16,15 +16,22 @@ const (
 )
 
 type Store interface {
-	Exec(query string, args ...any) (sql.Result, error)
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
 	Query(query string, args ...any) (*sql.Rows, error)
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 	Begin() (*sql.Tx, error)
 	IsRetryableError(err error) bool
 }
 
 type storeWrapper struct {
 	*sql.DB
+}
+
+func NewStoreWrapperForTest(db *sql.DB) Store {
+	return &storeWrapper{
+		DB: db,
+	}
 }
 
 func (s *storeWrapper) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
@@ -49,26 +56,12 @@ func (s *storeWrapper) ExecContext(ctx context.Context, query string, args ...an
 	return result, err
 }
 
-func (s *storeWrapper) Exec(query string, args ...any) (sql.Result, error) {
-	var result sql.Result
-	var err error
-	for attempts := 0; attempts < maxAttempts; attempts++ {
-		if attempts > 0 {
-			sleepDuration := jitter.Jitter(sleepBaseMs, jitter.DefaultMaxMs, attempts-1)
-			slog.Warn("Failed to execute the query, retrying...",
-				slog.Any("err", err),
-				slog.Duration("sleep", sleepDuration),
-				slog.Int("attempts", attempts),
-			)
-			time.Sleep(sleepDuration)
-		}
+func (s *storeWrapper) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	return s.DB.QueryContext(ctx, query, args...)
+}
 
-		result, err = s.DB.Exec(query, args...)
-		if err == nil || !s.IsRetryableError(err) {
-			break
-		}
-	}
-	return result, err
+func (s *storeWrapper) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
+	return s.DB.QueryRowContext(ctx, query, args...)
 }
 
 func (s *storeWrapper) Query(query string, args ...any) (*sql.Rows, error) {
@@ -89,8 +82,7 @@ func Open(driverName, dsn string) (Store, error) {
 		return nil, fmt.Errorf("failed to start a SQL client for driver %q: %w", driverName, err)
 	}
 
-	err = db.Ping()
-	if err != nil {
+	if err = db.Ping(); err != nil {
 		return nil, fmt.Errorf("failed to validate the DB connection for driver %q: %w", driverName, err)
 	}
 

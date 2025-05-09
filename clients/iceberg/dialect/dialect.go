@@ -12,12 +12,16 @@ import (
 
 type IcebergDialect struct{}
 
+func (IcebergDialect) BuildIdentifier(identifier string) string {
+	return strings.ToLower(identifier)
+}
+
 func (IcebergDialect) GetDefaultValueStrategy() sql.DefaultValueStrategy {
 	return sql.Native
 }
 
-func (IcebergDialect) QuoteIdentifier(identifier string) string {
-	return fmt.Sprintf("`%s`", strings.ReplaceAll(identifier, "`", ""))
+func (id IcebergDialect) QuoteIdentifier(identifier string) string {
+	return fmt.Sprintf("`%s`", id.BuildIdentifier(strings.ReplaceAll(identifier, "`", "")))
 }
 
 func (IcebergDialect) EscapeStruct(value string) string {
@@ -203,13 +207,14 @@ func (IcebergDialect) BuildTruncateTableQuery(tableID sql.TableIdentifier) strin
 
 func getCSVOptions(fp string) string {
 	// Options are sourced from: https://spark.apache.org/docs/3.5.3/sql-data-sources-csv.html
-	return fmt.Sprintf(`OPTIONS (path '%s', sep '\t', header 'true', compression 'gzip', nullValue '%s', inferSchema 'true')`, fp, constants.NullValuePlaceholder)
+	return fmt.Sprintf(`OPTIONS (path '%s', sep '\t', header 'false', compression 'gzip', nullValue '%s', escape '"', inferSchema 'false', multiLine 'true', lineSep '\n')`, fp, constants.NullValuePlaceholder)
 }
 
-func (IcebergDialect) BuildCreateTemporaryView(viewName string, s3Path string) string {
-	return fmt.Sprintf("CREATE OR REPLACE TEMPORARY VIEW %s USING csv %s;", viewName, getCSVOptions(s3Path))
+func (IcebergDialect) BuildCreateTemporaryView(viewName string, colParts []string, s3Path string) string {
+	return fmt.Sprintf("CREATE OR REPLACE TEMPORARY VIEW %s ( %s ) USING csv %s;", viewName, strings.Join(colParts, ", "), getCSVOptions(s3Path))
 }
 
-func (id IcebergDialect) BuildAppendToTable(tableID sql.TableIdentifier, viewName string) string {
-	return fmt.Sprintf("INSERT INTO %s TABLE %s", tableID.FullyQualifiedName(), viewName)
+func (id IcebergDialect) BuildAppendToTable(tableID sql.TableIdentifier, viewName string, columns []string) string {
+	// Ref: https://downloads.apache.org/spark/docs/3.1.1/sql-ref-syntax-dml-insert-into.html
+	return fmt.Sprintf("INSERT INTO %s (%s) SELECT %s FROM %s", tableID.FullyQualifiedName(), strings.Join(columns, ", "), strings.Join(columns, ", "), viewName)
 }

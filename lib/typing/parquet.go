@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/artie-labs/transfer/lib/typing/decimal"
+	"github.com/xitongsys/parquet-go/parquet"
 )
 
 type FieldTag struct {
@@ -64,54 +65,85 @@ type Field struct {
 
 func (k *KindDetails) ParquetAnnotation(colName string) (*Field, error) {
 	switch k.Kind {
-	case String.Kind, Struct.Kind, Date.Kind, Time.Kind:
+	case String.Kind, Struct.Kind:
 		return &Field{
 			Tag: FieldTag{
 				Name:          colName,
-				Type:          ToPtr("BYTE_ARRAY"),
-				ConvertedType: ToPtr("UTF8"),
+				Type:          ToPtr(parquet.Type_BYTE_ARRAY.String()),
+				ConvertedType: ToPtr(parquet.ConvertedType_UTF8.String()),
 			}.String(),
 		}, nil
 	case Float.Kind:
 		return &Field{
 			Tag: FieldTag{
 				Name: colName,
-				Type: ToPtr("FLOAT"),
+				Type: ToPtr(parquet.Type_FLOAT.String()),
 			}.String(),
 		}, nil
-	case Integer.Kind, TimestampNTZ.Kind, TimestampTZ.Kind:
+	case Date.Kind:
+		return &Field{
+			Tag: FieldTag{
+				Name:          colName,
+				Type:          ToPtr(parquet.Type_INT32.String()),
+				ConvertedType: ToPtr(parquet.ConvertedType_DATE.String()),
+			}.String(),
+		}, nil
+	case Time.Kind:
+		return &Field{
+			Tag: FieldTag{
+				Name:          colName,
+				Type:          ToPtr(parquet.Type_INT32.String()),
+				ConvertedType: ToPtr(parquet.ConvertedType_TIME_MILLIS.String()),
+			}.String(),
+		}, nil
+	case TimestampNTZ.Kind, TimestampTZ.Kind:
+		return &Field{
+			Tag: FieldTag{
+				Name:          colName,
+				Type:          ToPtr(parquet.Type_INT64.String()),
+				ConvertedType: ToPtr(parquet.ConvertedType_TIMESTAMP_MILLIS.String()),
+			}.String(),
+		}, nil
+	case Integer.Kind:
 		return &Field{
 			Tag: FieldTag{
 				Name: colName,
-				Type: ToPtr("INT64"),
+				Type: ToPtr(parquet.Type_INT64.String()),
 			}.String(),
 		}, nil
 	case EDecimal.Kind:
 		precision := k.ExtendedDecimalDetails.Precision()
 		if precision == decimal.PrecisionNotSpecified {
+			// Precision is required for a parquet DECIMAL type, as such, we should fall back on a STRING type.
 			return &Field{
 				Tag: FieldTag{
 					Name:          colName,
-					Type:          ToPtr("BYTE_ARRAY"),
-					ConvertedType: ToPtr("UTF8"),
+					Type:          ToPtr(parquet.Type_BYTE_ARRAY.String()),
+					ConvertedType: ToPtr(parquet.ConvertedType_UTF8.String()),
 				}.String(),
 			}, nil
 		}
+
 		scale := k.ExtendedDecimalDetails.Scale()
+		if scale > precision {
+			return nil, fmt.Errorf("scale (%d) must be less than or equal to precision (%d)", scale, precision)
+		}
+
 		return &Field{
 			Tag: FieldTag{
 				Name:          colName,
-				Type:          ToPtr("BYTE_ARRAY"),
-				ConvertedType: ToPtr("DECIMAL"),
+				Type:          ToPtr(parquet.Type_FIXED_LEN_BYTE_ARRAY.String()),
+				ConvertedType: ToPtr(parquet.ConvertedType_DECIMAL.String()),
 				Precision:     ToPtr(int(precision)),
 				Scale:         ToPtr(int(scale)),
+				Length:        ToPtr(int(k.ExtendedDecimalDetails.TwosComplementByteArrLength())),
 			}.String(),
 		}, nil
 	case Boolean.Kind:
 		return &Field{
 			Tag: FieldTag{
 				Name: colName,
-				Type: ToPtr("BOOLEAN"),
+				Type: ToPtr(parquet.Type_BOOLEAN.String()),
 			}.String(),
 		}, nil
 	case Array.Kind:
@@ -125,8 +157,8 @@ func (k *KindDetails) ParquetAnnotation(colName string) (*Field, error) {
 				{
 					Tag: FieldTag{
 						Name:           "element",
-						Type:           ToPtr("BYTE_ARRAY"),
-						ConvertedType:  ToPtr("UTF8"),
+						Type:           ToPtr(parquet.Type_BYTE_ARRAY.String()),
+						ConvertedType:  ToPtr(parquet.ConvertedType_UTF8.String()),
 						RepetitionType: ToPtr("REQUIRED"),
 					}.String(),
 				},

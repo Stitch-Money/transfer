@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	awsCfg "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/xitongsys/parquet-go-source/local"
 	"github.com/xitongsys/parquet-go/parquet"
 	"github.com/xitongsys/parquet-go/writer"
@@ -19,18 +21,14 @@ import (
 	"github.com/artie-labs/transfer/lib/parquetutil"
 	"github.com/artie-labs/transfer/lib/sql"
 	"github.com/artie-labs/transfer/lib/stringutil"
-	"github.com/artie-labs/transfer/lib/typing/ext"
 )
 
 type Store struct {
-	config config.Config
+	config   config.Config
+	s3Client awslib.S3Client
 }
 
-func (s *Store) Validate() error {
-	if s == nil {
-		return fmt.Errorf("s3 store is nil")
-	}
-
+func (s Store) Validate() error {
 	if err := s.config.S3.Validate(); err != nil {
 		return fmt.Errorf("failed to validate settings: %w", err)
 	}
@@ -38,18 +36,18 @@ func (s *Store) Validate() error {
 	return nil
 }
 
-func (s *Store) IdentifierFor(topicConfig kafkalib.TopicConfig, table string) sql.TableIdentifier {
-	return NewTableIdentifier(topicConfig.Database, topicConfig.Schema, table)
+func (s *Store) IdentifierFor(topicConfig kafkalib.DatabaseAndSchemaPair, table string) sql.TableIdentifier {
+	return NewTableIdentifier(topicConfig.Database, topicConfig.Schema, table, s.config.S3.TableNameSeparator)
 }
 
 // ObjectPrefix - this will generate the exact right prefix that we need to write into S3.
 // It will look like something like this:
 // > folderName/fullyQualifiedTableName/YYYY-MM-DD
 func (s *Store) ObjectPrefix(tableData *optimization.TableData) string {
-	tableID := s.IdentifierFor(tableData.TopicConfig(), tableData.Name())
+	tableID := s.IdentifierFor(tableData.TopicConfig().BuildDatabaseAndSchemaPair(), tableData.Name())
 	fqTableName := tableID.FullyQualifiedName()
 	// Adding date= prefix so that it adheres to the partitioning format for Hive.
-	yyyyMMDDFormat := fmt.Sprintf("date=%s", time.Now().Format(ext.PostgresDateFormat))
+	yyyyMMDDFormat := fmt.Sprintf("date=%s", time.Now().Format(time.DateOnly))
 	if len(s.config.S3.FolderName) > 0 {
 		return strings.Join([]string{s.config.S3.FolderName, fqTableName, yyyyMMDDFormat}, "/")
 	}
@@ -129,14 +127,7 @@ func (s *Store) Merge(ctx context.Context, tableData *optimization.TableData) (b
 		}
 	}()
 
-	if _, err = awslib.UploadLocalFileToS3(ctx, awslib.UploadArgs{
-		Bucket:                     s.config.S3.Bucket,
-		OptionalS3Prefix:           s.ObjectPrefix(tableData),
-		FilePath:                   fp,
-		OverrideAWSAccessKeyID:     s.config.S3.AwsAccessKeyID,
-		OverrideAWSAccessKeySecret: s.config.S3.AwsSecretAccessKey,
-		Region:                     s.config.S3.AwsRegion,
-	}); err != nil {
+	if _, err = s.s3Client.UploadLocalFileToS3(ctx, s.config.S3.Bucket, s.ObjectPrefix(tableData), fp); err != nil {
 		return false, fmt.Errorf("failed to upload file to s3: %w", err)
 	}
 
@@ -147,12 +138,21 @@ func (s *Store) IsRetryableError(_ error) bool {
 	return false // not supported for S3
 }
 
-func LoadStore(cfg config.Config) (*Store, error) {
-	store := &Store{config: cfg}
+func LoadStore(ctx context.Context, cfg config.Config) (*Store, error) {
+	creds := credentials.NewStaticCredentialsProvider(cfg.S3.AwsAccessKeyID, cfg.S3.AwsSecretAccessKey, "")
+	awsConfig, err := awsCfg.LoadDefaultConfig(ctx, awsCfg.WithCredentialsProvider(creds), awsCfg.WithRegion(cfg.S3.AwsRegion))
+	if err != nil {
+		return nil, fmt.Errorf("failed to load aws config: %w", err)
+	}
+
+	store := Store{
+		config:   cfg,
+		s3Client: awslib.NewS3Client(awsConfig),
+	}
 
 	if err := store.Validate(); err != nil {
 		return nil, err
 	}
 
-	return store, nil
+	return &store, nil
 }

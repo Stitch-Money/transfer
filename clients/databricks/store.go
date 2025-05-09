@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"path/filepath"
 
 	_ "github.com/databricks/databricks-sql-go"
 	"github.com/databricks/databricks-sql-go/driverctx"
@@ -14,7 +13,6 @@ import (
 	"github.com/artie-labs/transfer/clients/shared"
 	"github.com/artie-labs/transfer/lib/config"
 	"github.com/artie-labs/transfer/lib/config/constants"
-	"github.com/artie-labs/transfer/lib/csvwriter"
 	"github.com/artie-labs/transfer/lib/db"
 	"github.com/artie-labs/transfer/lib/destination/ddl"
 	"github.com/artie-labs/transfer/lib/destination/types"
@@ -32,8 +30,18 @@ type Store struct {
 	configMap *types.DestinationTableConfigMap
 }
 
-func (s Store) DropTable(_ context.Context, _ sql.TableIdentifier) error {
-	return fmt.Errorf("not supported")
+func (s Store) DropTable(ctx context.Context, tableID sql.TableIdentifier) error {
+	if !tableID.AllowToDrop() {
+		return fmt.Errorf("table %q is not allowed to be dropped", tableID.FullyQualifiedName())
+	}
+
+	if _, err := s.ExecContext(ctx, s.dialect().BuildDropTableQuery(tableID)); err != nil {
+		return fmt.Errorf("failed to drop table: %w", err)
+	}
+
+	// We'll then clear it from our cache
+	s.configMap.RemoveTable(tableID)
+	return nil
 }
 
 func (s Store) Merge(ctx context.Context, tableData *optimization.TableData) (bool, error) {
@@ -44,12 +52,12 @@ func (s Store) Merge(ctx context.Context, tableData *optimization.TableData) (bo
 	return true, nil
 }
 
-func (s Store) Append(ctx context.Context, tableData *optimization.TableData, useTempTable bool) error {
-	return shared.Append(ctx, s, tableData, types.AdditionalSettings{UseTempTable: useTempTable})
+func (s Store) Append(ctx context.Context, tableData *optimization.TableData, _ bool) error {
+	return shared.Append(ctx, s, tableData, types.AdditionalSettings{})
 }
 
-func (s Store) IdentifierFor(topicConfig kafkalib.TopicConfig, table string) sql.TableIdentifier {
-	return dialect.NewTableIdentifier(topicConfig.Database, topicConfig.Schema, table)
+func (s Store) IdentifierFor(databaseAndSchema kafkalib.DatabaseAndSchemaPair, table string) sql.TableIdentifier {
+	return dialect.NewTableIdentifier(databaseAndSchema.Database, databaseAndSchema.Schema, table)
 }
 
 func (s Store) Dialect() sql.Dialect {
@@ -60,16 +68,16 @@ func (s Store) dialect() dialect.DatabricksDialect {
 	return dialect.DatabricksDialect{}
 }
 
-func (s Store) Dedupe(tableID sql.TableIdentifier, primaryKeys []string, includeArtieUpdatedAt bool) error {
+func (s Store) Dedupe(ctx context.Context, tableID sql.TableIdentifier, primaryKeys []string, includeArtieUpdatedAt bool) error {
 	stagingTableID := shared.TempTableID(tableID)
 	defer func() {
 		// Drop the staging table once we're done with the dedupe.
-		_ = ddl.DropTemporaryTable(s, stagingTableID, false)
+		_ = ddl.DropTemporaryTable(ctx, s, stagingTableID, false)
 	}()
 
 	for _, query := range s.Dialect().BuildDedupeQueries(tableID, stagingTableID, primaryKeys, includeArtieUpdatedAt) {
 		// Databricks doesn't support transactions, so we can't wrap this in a transaction.
-		if _, err := s.Exec(query); err != nil {
+		if _, err := s.ExecContext(ctx, query); err != nil {
 			return fmt.Errorf("failed to execute query: %w", err)
 		}
 	}
@@ -141,57 +149,44 @@ func (s Store) PrepareTemporaryTable(ctx context.Context, tableData *optimizatio
 	}
 
 	copyCommand := s.dialect().BuildCopyIntoQuery(tempTableID, ordinalColumns, file.DBFSFilePath())
-	if _, err = s.ExecContext(ctx, copyCommand); err != nil {
+	result, err := s.ExecContext(ctx, copyCommand)
+	if err != nil {
 		return fmt.Errorf("failed to run COPY INTO for temporary table: %w", err)
+	}
+
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get rows affected: %w", err)
+	}
+
+	if expectedRows := int64(tableData.NumberOfRows()); rows != expectedRows {
+		return fmt.Errorf("rows affected mismatch, expected: %d, got: %d", expectedRows, rows)
 	}
 
 	return nil
 }
 
-func castColValStaging(colVal any, colKind typing.KindDetails) (string, error) {
+func castColValStaging(colVal any, colKind typing.KindDetails, _ config.SharedDestinationSettings) (shared.ValueConvertResponse, error) {
 	if colVal == nil {
-		return constants.NullValuePlaceholder, nil
+		return shared.ValueConvertResponse{Value: constants.NullValuePlaceholder}, nil
 	}
 
 	value, err := values.ToString(colVal, colKind)
 	if err != nil {
-		return "", err
+		return shared.ValueConvertResponse{}, err
 	}
 
-	return value, nil
+	return shared.ValueConvertResponse{Value: value}, nil
 }
 
 func (s Store) writeTemporaryTableFile(tableData *optimization.TableData, fileName string) (string, error) {
-	fp := filepath.Join(os.TempDir(), fileName)
-	gzipWriter, err := csvwriter.NewGzipWriter(fp)
+	tempTableDataFile := shared.NewTemporaryDataFileWithFileName(fileName)
+	file, _, err := tempTableDataFile.WriteTemporaryTableFile(tableData, castColValStaging, s.cfg.SharedDestinationSettings)
 	if err != nil {
-		return "", fmt.Errorf("failed to create gzip writer: %w", err)
+		return "", fmt.Errorf("failed to write temporary table file: %w", err)
 	}
 
-	defer gzipWriter.Close()
-
-	columns := tableData.ReadOnlyInMemoryCols().ValidColumns()
-	for _, value := range tableData.Rows() {
-		var row []string
-		for _, col := range columns {
-			castedValue, castErr := castColValStaging(value[col.Name()], col.KindDetails)
-			if castErr != nil {
-				return "", castErr
-			}
-
-			row = append(row, castedValue)
-		}
-
-		if err = gzipWriter.Write(row); err != nil {
-			return "", fmt.Errorf("failed to write to csv: %w", err)
-		}
-	}
-
-	if err = gzipWriter.Flush(); err != nil {
-		return "", fmt.Errorf("failed to flush gzip writer: %w", err)
-	}
-
-	return fp, nil
+	return file.FilePath, nil
 }
 
 func (s Store) SweepTemporaryTables(ctx context.Context) error {
@@ -203,7 +198,7 @@ func (s Store) SweepTemporaryTables(ctx context.Context) error {
 	ctx = driverctx.NewContextWithStagingInfo(ctx, []string{"/var", "tmp"})
 	// Remove the temporary files from volumes
 	for _, tc := range tcs {
-		rows, err := s.Query(s.dialect().BuildSweepFilesFromVolumesQuery(tc.Database, tc.Schema, s.volume))
+		rows, err := s.QueryContext(ctx, s.dialect().BuildSweepFilesFromVolumesQuery(tc.Database, tc.Schema, s.volume))
 		if err != nil {
 			return fmt.Errorf("failed to sweep files from volumes: %w", err)
 		}
@@ -228,7 +223,7 @@ func (s Store) SweepTemporaryTables(ctx context.Context) error {
 	}
 
 	// Delete the temporary tables
-	return shared.Sweep(s, tcs, s.dialect().BuildSweepQuery)
+	return shared.Sweep(ctx, s, tcs, s.dialect().BuildSweepQuery)
 }
 
 func LoadStore(cfg config.Config) (Store, error) {

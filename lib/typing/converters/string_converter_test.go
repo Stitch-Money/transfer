@@ -130,8 +130,14 @@ func TestArrayConverter_Convert(t *testing.T) {
 func TestFloatConverter_Convert(t *testing.T) {
 	{
 		// Unexpected type
-		_, err := FloatConverter{}.Convert("foo")
-		assert.ErrorContains(t, err, `unexpected value: 'foo', type: string`)
+		_, err := FloatConverter{}.Convert(true)
+		assert.ErrorContains(t, err, `unexpected value: 'true', type: bool`)
+	}
+	{
+		// String
+		val, err := FloatConverter{}.Convert("123.45")
+		assert.NoError(t, err)
+		assert.Equal(t, "123.45", val)
 	}
 	{
 		// Float32
@@ -232,10 +238,10 @@ func TestStructConverter_Convert(t *testing.T) {
 		assert.Equal(t, `{"key":"__debezium_unavailable_value"}`, val)
 	}
 	{
-		// Normal string
+		// Struct
 		val, err := StructConverter{}.Convert(`{"foo":"bar"}`)
 		assert.NoError(t, err)
-		assert.Equal(t, `{"foo":"bar"}`, val)
+		assert.Equal(t, `"{\"foo\":\"bar\"}"`, val)
 	}
 	{
 		// Boolean
@@ -248,5 +254,11 @@ func TestStructConverter_Convert(t *testing.T) {
 		val, err := StructConverter{}.Convert(map[string]any{"foo": "bar"})
 		assert.NoError(t, err)
 		assert.Equal(t, `{"foo":"bar"}`, val)
+	}
+	{
+		// Number
+		val, err := StructConverter{}.Convert(123)
+		assert.NoError(t, err)
+		assert.Equal(t, "123", val)
 	}
 }

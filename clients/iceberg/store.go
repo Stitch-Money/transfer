@@ -3,8 +3,9 @@ package iceberg
 import (
 	"context"
 	"fmt"
+	"maps"
+	"slices"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 
 	"github.com/artie-labs/transfer/clients/iceberg/dialect"
@@ -12,6 +13,7 @@ import (
 	"github.com/artie-labs/transfer/lib/apachelivy"
 	"github.com/artie-labs/transfer/lib/awslib"
 	"github.com/artie-labs/transfer/lib/config"
+	"github.com/artie-labs/transfer/lib/destination/ddl"
 	"github.com/artie-labs/transfer/lib/destination/types"
 	"github.com/artie-labs/transfer/lib/kafkalib"
 	"github.com/artie-labs/transfer/lib/optimization"
@@ -22,9 +24,18 @@ import (
 type Store struct {
 	catalogName      string
 	s3TablesAPI      awslib.S3TablesAPIWrapper
-	apacheLivyClient apachelivy.Client
+	s3Client         awslib.S3Client
+	apacheLivyClient *apachelivy.Client
 	config           config.Config
 	cm               *types.DestinationTableConfigMap
+}
+
+func (s Store) GetApacheLivyClient() *apachelivy.Client {
+	return s.apacheLivyClient
+}
+
+func (s Store) GetS3TablesAPI() awslib.S3TablesAPIWrapper {
+	return s.s3TablesAPI
 }
 
 func (s Store) Dialect() dialect.IcebergDialect {
@@ -36,7 +47,7 @@ func (s Store) Append(ctx context.Context, tableData *optimization.TableData, us
 		return nil
 	}
 
-	tableID := s.IdentifierFor(tableData.TopicConfig(), tableData.Name())
+	tableID := s.IdentifierFor(tableData.TopicConfig().BuildDatabaseAndSchemaPair(), tableData.Name())
 	tempTableID := shared.TempTableIDWithSuffix(tableID, tableData.TempTableSuffix())
 	tableConfig, err := s.GetTableConfig(ctx, tableID, tableData.TopicConfig().DropDeletedColumns)
 	if err != nil {
@@ -72,9 +83,16 @@ func (s Store) Append(ctx context.Context, tableData *optimization.TableData, us
 		return fmt.Errorf("failed to prepare temporary table: %w", err)
 	}
 
+	validColumns := tableData.ReadOnlyInMemoryCols().ValidColumns()
+	validColumnNames := make([]string, len(validColumns))
+	for i, col := range validColumns {
+		validColumnNames[i] = col.Name()
+	}
+
 	// Then append the view into the target table
-	if err = s.apacheLivyClient.ExecContext(ctx, s.Dialect().BuildAppendToTable(tableID, tempTableID.EscapedTable())); err != nil {
-		return fmt.Errorf("failed to append to table: %w", err)
+	query := s.Dialect().BuildAppendToTable(tableID, tempTableID.EscapedTable(), validColumnNames)
+	if err = s.apacheLivyClient.ExecContext(ctx, query); err != nil {
+		return fmt.Errorf("failed to append to table: %w, query: %s", err, query)
 	}
 
 	return nil
@@ -118,7 +136,7 @@ func (s Store) Merge(ctx context.Context, tableData *optimization.TableData) (bo
 		return false, nil
 	}
 
-	tableID := s.IdentifierFor(tableData.TopicConfig(), tableData.Name())
+	tableID := s.IdentifierFor(tableData.TopicConfig().BuildDatabaseAndSchemaPair(), tableData.Name())
 	temporaryTableID := shared.TempTableIDWithSuffix(tableID, tableData.TempTableSuffix())
 	tableConfig, err := s.GetTableConfig(ctx, tableID, tableData.TopicConfig().DropDeletedColumns)
 	if err != nil {
@@ -206,20 +224,47 @@ func (s Store) Dedupe(ctx context.Context, tableID sql.TableIdentifier, primaryK
 	return nil
 }
 
-func (s Store) IdentifierFor(topicConfig kafkalib.TopicConfig, table string) sql.TableIdentifier {
-	return dialect.NewTableIdentifier(s.catalogName, topicConfig.Schema, table)
+func (s Store) IdentifierFor(databaseAndSchema kafkalib.DatabaseAndSchemaPair, table string) sql.TableIdentifier {
+	return dialect.NewTableIdentifier(s.catalogName, databaseAndSchema.Schema, table)
+}
+
+func SweepTemporaryTables(ctx context.Context, s3TablesAPI awslib.S3TablesAPIWrapper, _dialect dialect.IcebergDialect, namespaces []string) error {
+	for _, namespace := range namespaces {
+		tables, err := s3TablesAPI.ListTables(ctx, _dialect.BuildIdentifier(namespace))
+		if err != nil {
+			return fmt.Errorf("failed to list tables: %w", err)
+		}
+
+		for _, table := range tables {
+			if ddl.ShouldDeleteFromName(*table.Name) {
+				if err := s3TablesAPI.DeleteTable(ctx, _dialect.BuildIdentifier(namespace), *table.Name); err != nil {
+					return fmt.Errorf("failed to delete table: %w", err)
+				}
+			}
+		}
+	}
+
+	return nil
 }
 
 func LoadStore(ctx context.Context, cfg config.Config) (Store, error) {
-	apacheLivyClient, err := apachelivy.NewClient(ctx, cfg.Iceberg.ApacheLivyURL, cfg.Iceberg.S3Tables.ApacheLivyConfig())
+	apacheLivyClient, err := apachelivy.NewClient(
+		ctx,
+		cfg.Iceberg.ApacheLivyURL,
+		cfg.Iceberg.S3Tables.ApacheLivyConfig(),
+		cfg.Iceberg.S3Tables.SessionJars,
+		cfg.Iceberg.SessionHeartbeatTimeoutInSecond,
+		cfg.Iceberg.SessionDriverMemory,
+		cfg.Iceberg.SessionExecutorMemory,
+	)
 	if err != nil {
 		return Store{}, err
 	}
 
-	awsCfg := aws.Config{
-		Region:      cfg.Iceberg.S3Tables.Region,
-		Credentials: credentials.NewStaticCredentialsProvider(cfg.Iceberg.S3Tables.AwsAccessKeyID, cfg.Iceberg.S3Tables.AwsSecretAccessKey, ""),
-	}
+	awsCfg := awslib.NewConfigWithCredentialsAndRegion(
+		credentials.NewStaticCredentialsProvider(cfg.Iceberg.S3Tables.AwsAccessKeyID, cfg.Iceberg.S3Tables.AwsSecretAccessKey, ""),
+		cfg.Iceberg.S3Tables.Region,
+	)
 
 	store := Store{
 		catalogName:      cfg.Iceberg.S3Tables.CatalogName(),
@@ -227,12 +272,21 @@ func LoadStore(ctx context.Context, cfg config.Config) (Store, error) {
 		apacheLivyClient: apacheLivyClient,
 		cm:               &types.DestinationTableConfigMap{},
 		s3TablesAPI:      awslib.NewS3TablesAPI(awsCfg, cfg.Iceberg.S3Tables.BucketARN),
+		s3Client:         awslib.NewS3Client(awsCfg),
 	}
 
+	namespaces := make(map[string]bool)
 	for _, tc := range cfg.Kafka.TopicConfigs {
-		if err := store.EnsureNamespaceExists(ctx, tc.Schema); err != nil {
+		if err := store.EnsureNamespaceExists(ctx, store.Dialect().BuildIdentifier(tc.Schema)); err != nil {
 			return Store{}, fmt.Errorf("failed to ensure namespace exists: %w", err)
 		}
+
+		namespaces[tc.Schema] = true
+	}
+
+	// Then sweep the temporary tables.
+	if err = SweepTemporaryTables(ctx, store.s3TablesAPI, store.Dialect(), slices.Collect(maps.Keys(namespaces))); err != nil {
+		return Store{}, fmt.Errorf("failed to sweep temporary tables: %w", err)
 	}
 
 	return store, nil
