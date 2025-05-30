@@ -35,7 +35,7 @@ func (SnowflakeDialect) DataTypeForKind(kindDetails typing.KindDetails, _ bool, 
 
 // KindForDataType converts a Snowflake type to a KindDetails.
 // Following this spec: https://docs.snowflake.com/en/sql-reference/intro-summary-data-types.html
-func (SnowflakeDialect) KindForDataType(snowflakeType string, _ string) (typing.KindDetails, error) {
+func (SnowflakeDialect) KindForDataType(snowflakeType string) (typing.KindDetails, error) {
 	// We need to strip away the variable
 	// For example, a Column can look like: TEXT, or Number(38, 0) or VARCHAR(255).
 	// We need to strip out all the content from ( ... )
@@ -46,10 +46,8 @@ func (SnowflakeDialect) KindForDataType(snowflakeType string, _ string) (typing.
 
 	// Geography, geometry date, time, varbinary, binary are currently not supported.
 	switch dataType {
-	case "number", "numeric":
+	case "number", "numeric", "decimal":
 		return typing.ParseNumeric(parameters)
-	case "decimal":
-		return typing.EDecimal, nil
 	case "float", "float4",
 		"float8", "double", "double precision", "real":
 		return typing.Float, nil
@@ -87,6 +85,6 @@ func (SnowflakeDialect) KindForDataType(snowflakeType string, _ string) (typing.
 	case "date":
 		return typing.Date, nil
 	default:
-		return typing.Invalid, fmt.Errorf("unsupported data type: %q", snowflakeType)
+		return typing.Invalid, typing.NewUnsupportedDataTypeError(fmt.Sprintf("unsupported data type: %q", snowflakeType))
 	}
 }

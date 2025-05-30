@@ -75,3 +75,30 @@ dest-itest-merge:
 	go run integration_tests/destination_merge/main.go --config .personal/integration_tests/databricks.yaml
 	go run integration_tests/destination_merge/main.go --config .personal/integration_tests/redshift.yaml
 	go run integration_tests/destination_merge/main.go --config .personal/integration_tests/mssql.yaml
+
+.PHONY: parquet-venv
+parquet-venv:
+	@echo "Setting up Python venv for parquet integration test..."
+	@if [ ! -d integration_tests/parquet/venv ]; then \
+		python3 -m venv integration_tests/parquet/venv; \
+	fi
+	@integration_tests/parquet/venv/bin/pip install --upgrade pip > /dev/null
+	@integration_tests/parquet/venv/bin/pip install -r integration_tests/parquet/requirements.txt > /dev/null
+
+.PHONY: test-parquet
+test-parquet: parquet-venv
+	@echo "Running parquet integration test (Go) with location America/New_York"
+	@cd integration_tests/parquet && go run main.go --location=America/New_York
+	@echo "Running parquet verification (Python)..."
+	@cd integration_tests/parquet && venv/bin/python verify_parquet.py --file-path output/test.parquet --location America/New_York
+	
+	@echo "Running parquet integration test (Go) with no location set"
+	@cd integration_tests/parquet && go run main.go
+	@echo "Running parquet verification (Python)..."
+	@cd integration_tests/parquet && venv/bin/python verify_parquet.py --file-path output/test.parquet
+
+.PHONY: dest-itest-types
+dest-itest-types:
+	go run integration_tests/destination_types/main.go --config .personal/integration_tests/redshift.yaml
+	go run integration_tests/destination_types/main.go --config .personal/integration_tests/mssql.yaml
+	go run integration_tests/destination_types/main.go --config .personal/integration_tests/snowflake.yaml

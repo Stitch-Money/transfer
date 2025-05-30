@@ -60,29 +60,29 @@ func (RedshiftDialect) DataTypeForKind(kd typing.KindDetails, _ bool, _ config.S
 	return kd.Kind
 }
 
-func (RedshiftDialect) KindForDataType(rawType string, stringPrecision string) (typing.KindDetails, error) {
-	rawType = strings.ToLower(rawType)
-	if strings.HasPrefix(rawType, "numeric") {
-		_, parameters, err := sql.ParseDataTypeDefinition(rawType)
-		if err != nil {
-			return typing.Invalid, err
-		}
-		return typing.ParseNumeric(parameters)
+func (RedshiftDialect) KindForDataType(rawType string) (typing.KindDetails, error) {
+	dataType, parameters, err := sql.ParseDataTypeDefinition(strings.ToLower(rawType))
+	if err != nil {
+		return typing.Invalid, err
 	}
 
-	if strings.Contains(rawType, "character varying") {
-		precision, err := strconv.ParseInt(stringPrecision, 10, 32)
+	switch dataType {
+	case "numeric":
+		return typing.ParseNumeric(parameters)
+	case "character varying":
+		if len(parameters) != 1 {
+			return typing.Invalid, fmt.Errorf("expected 1 parameter for character varying, got %d, value: %q", len(parameters), rawType)
+		}
+
+		precision, err := strconv.ParseInt(parameters[0], 10, 32)
 		if err != nil {
-			return typing.Invalid, fmt.Errorf("failed to parse string precision: %q, err: %w", stringPrecision, err)
+			return typing.Invalid, fmt.Errorf("failed to parse string precision: %q, err: %w", parameters[0], err)
 		}
 
 		return typing.KindDetails{
 			Kind:                    typing.String.Kind,
 			OptionalStringPrecision: typing.ToPtr(int32(precision)),
 		}, nil
-	}
-
-	switch rawType {
 	case "character":
 		return typing.KindDetails{Kind: typing.String.Kind}, nil
 	case "super":
@@ -115,6 +115,6 @@ func (RedshiftDialect) KindForDataType(rawType string, stringPrecision string) (
 	case "boolean":
 		return typing.Boolean, nil
 	default:
-		return typing.Invalid, fmt.Errorf("unsupported data type: %q", rawType)
+		return typing.Invalid, typing.NewUnsupportedDataTypeError(fmt.Sprintf("unsupported data type: %q", rawType))
 	}
 }
