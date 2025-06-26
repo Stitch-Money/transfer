@@ -14,6 +14,17 @@ import (
 	"github.com/artie-labs/transfer/lib/typing/decimal"
 )
 
+func TestTableData_WipeData(t *testing.T) {
+	td := NewTableData(nil, config.Replication, nil, kafkalib.TopicConfig{}, "foo")
+	td.containsHardDeletes = true
+
+	assert.True(t, td.ContainsHardDeletes())
+
+	// After we wipe the table data, hard delete flag should stick
+	td.WipeData()
+	assert.True(t, td.ContainsHardDeletes())
+}
+
 func TestTableData_ReadOnlyInMemoryCols(t *testing.T) {
 	// Making sure the columns are actually read only.
 	var cols columns.Columns
@@ -322,5 +333,15 @@ func TestTableData_BuildColumnsToKeep(t *testing.T) {
 		// Include artie operation is true
 		td := TableData{mode: config.Replication, topicConfig: kafkalib.TopicConfig{IncludeArtieOperation: true}}
 		assert.ElementsMatch(t, []string{constants.OperationColumnMarker}, td.BuildColumnsToKeep())
+	}
+	{
+		// Include source metadata is true
+		td := TableData{mode: config.Replication, topicConfig: kafkalib.TopicConfig{IncludeSourceMetadata: true}}
+		assert.ElementsMatch(t, []string{constants.SourceMetadataColumnMarker}, td.BuildColumnsToKeep())
+	}
+	{
+		// Include full source table name is true
+		td := TableData{mode: config.Replication, topicConfig: kafkalib.TopicConfig{IncludeFullSourceTableName: true}}
+		assert.ElementsMatch(t, []string{constants.FullSourceTableNameColumnMarker}, td.BuildColumnsToKeep())
 	}
 }

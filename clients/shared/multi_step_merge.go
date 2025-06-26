@@ -39,13 +39,8 @@ func MultiStepMerge(ctx context.Context, dest destination.Destination, tableData
 	}
 
 	if msmSettings.IsFirstFlush() {
-		sflkMSMTableID, ok := msmTableID.(dialect.TableIdentifier)
-		if !ok {
-			return false, fmt.Errorf("failed to get snowflake table identifier")
-		}
-
 		// If it's the first time we are doing this, we should ensure the MSM table has been dropped.
-		if err := dest.DropTable(ctx, sflkMSMTableID.WithDisableDropProtection(true)); err != nil {
+		if err := dest.DropTable(ctx, msmTableID.WithDisableDropProtection(true)); err != nil {
 			return false, fmt.Errorf("failed to drop msm table: %w", err)
 		}
 
@@ -137,11 +132,6 @@ func merge(ctx context.Context, dwh destination.Destination, tableData *optimiza
 		}
 	}()
 
-	snowflakeDialect, ok := dwh.Dialect().(dialect.SnowflakeDialect)
-	if !ok {
-		return fmt.Errorf("multi-step merge is only supported on Snowflake")
-	}
-
 	if opts.PrepareTemporaryTable {
 		if err := dwh.PrepareTemporaryTable(ctx, tableData, tableConfig, temporaryTableID, targetTableID, types.AdditionalSettings{ColumnSettings: opts.ColumnSettings}, true); err != nil {
 			return fmt.Errorf("failed to prepare temporary table: %w", err)
@@ -151,7 +141,7 @@ func merge(ctx context.Context, dwh destination.Destination, tableData *optimiza
 	// TODO: Support column backfill
 	subQuery := temporaryTableID.FullyQualifiedName()
 	if opts.SubQueryDedupe {
-		subQuery = snowflakeDialect.BuildDedupeTableQuery(temporaryTableID, tableData.PrimaryKeys())
+		subQuery = dwh.Dialect().BuildDedupeTableQuery(temporaryTableID, tableData.PrimaryKeys())
 	}
 
 	if subQuery == "" {
@@ -185,7 +175,7 @@ func merge(ctx context.Context, dwh destination.Destination, tableData *optimiza
 
 	var mergeStatements []string
 	if opts.UseBuildMergeQueryIntoStagingTable {
-		mergeStatements = snowflakeDialect.BuildMergeQueryIntoStagingTable(
+		mergeStatements = dwh.Dialect().BuildMergeQueryIntoStagingTable(
 			targetTableID,
 			subQuery,
 			primaryKeys,
@@ -193,7 +183,7 @@ func merge(ctx context.Context, dwh destination.Destination, tableData *optimiza
 			validColumns,
 		)
 	} else {
-		_mergeStatements, err := snowflakeDialect.BuildMergeQueries(
+		_mergeStatements, err := dwh.Dialect().BuildMergeQueries(
 			targetTableID,
 			subQuery,
 			primaryKeys,

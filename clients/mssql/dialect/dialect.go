@@ -15,7 +15,12 @@ import (
 type MSSQLDialect struct{}
 
 func (MSSQLDialect) QuoteIdentifier(identifier string) string {
-	return fmt.Sprintf(`"%s"`, strings.ReplaceAll(identifier, `"`, ``))
+	charToReplace := []string{`[`, `]`}
+	for _, char := range charToReplace {
+		identifier = strings.ReplaceAll(identifier, char, ``)
+	}
+
+	return fmt.Sprintf(`[%s]`, identifier)
 }
 
 func (MSSQLDialect) EscapeStruct(value string) string {
@@ -53,8 +58,12 @@ func (MSSQLDialect) BuildDedupeTableQuery(_ sql.TableIdentifier, _ []string) str
 	panic("not implemented")
 }
 
-func (MSSQLDialect) BuildDedupeQueries(_, _ sql.TableIdentifier, _ []string, _ bool) []string {
+func (MSSQLDialect) BuildDedupeQueries(tableID, stagingTableID sql.TableIdentifier, primaryKeys []string, includeArtieUpdatedAt bool) []string {
 	panic("not implemented") // We don't currently support deduping for MS SQL.
+}
+
+func (MSSQLDialect) BuildMergeQueryIntoStagingTable(tableID sql.TableIdentifier, subQuery string, primaryKeys []columns.Column, additionalEqualityStrings []string, cols []columns.Column) []string {
+	panic("not implemented")
 }
 
 func (md MSSQLDialect) BuildMergeQueries(

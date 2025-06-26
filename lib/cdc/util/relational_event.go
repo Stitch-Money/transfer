@@ -1,6 +1,7 @@
 package util
 
 import (
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -30,10 +31,14 @@ type Source struct {
 	Database  string `json:"db"`
 	Schema    string `json:"schema,omitempty"`
 	Table     string `json:"table"`
+
 	// MySQL specific
 	File string  `json:"file,omitempty"`
 	Pos  int64   `json:"pos,omitempty"`
 	Gtid *string `json:"gtid,omitempty"`
+	// MSSQL specific
+	LSN           any    `json:"lsn,omitempty"`
+	TransactionID *int64 `json:"transaction_id,omitempty"`
 }
 
 func shouldParseValue(value any) bool {
@@ -90,6 +95,23 @@ func (s *SchemaEventPayload) GetExecutionTime() time.Time {
 
 func (s *SchemaEventPayload) GetTableName() string {
 	return s.Payload.Source.Table
+}
+
+func (s *SchemaEventPayload) GetFullTableName() string {
+	if s.Payload.Source.Schema != "" {
+		return s.Payload.Source.Schema + "." + s.Payload.Source.Table
+	}
+
+	return s.Payload.Source.Table
+}
+
+func (s *SchemaEventPayload) GetSourceMetadata() (string, error) {
+	json, err := json.Marshal(s.Payload.Source)
+	if err != nil {
+		return "", err
+	}
+
+	return string(json), nil
 }
 
 func (s *SchemaEventPayload) GetData(tc kafkalib.TopicConfig) (map[string]any, error) {
