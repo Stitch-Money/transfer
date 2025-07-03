@@ -16,9 +16,15 @@ func StartPool(ctx context.Context, inMemDB *models.DatabaseData, dest destinati
 	slog.Info("Starting pool timer...")
 	ticker := time.NewTicker(td)
 	for range ticker.C {
-		slog.Info("Flushing via pool...")
-		if err := consumer.Flush(ctx, inMemDB, dest, metricsClient, consumer.Args{Reason: "time", CoolDown: typing.ToPtr(td)}); err != nil {
-			slog.Error("Failed to flush via pool", slog.Any("err", err))
+		select {
+		case <-ctx.Done():
+			slog.Info("Context Closed, no longer flushing via pool.")
+			return
+		default:
+			slog.Info("Flushing via pool...")
+			if err := consumer.Flush(ctx, inMemDB, dest, metricsClient, consumer.Args{Reason: "time", CoolDown: typing.ToPtr(td)}); err != nil {
+				slog.Error("Failed to flush via pool", slog.Any("err", err))
+			}
 		}
 	}
 }

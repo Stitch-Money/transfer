@@ -20,6 +20,13 @@ type processArgs struct {
 }
 
 func (p processArgs) process(ctx context.Context, cfg config.Config, inMemDB *models.DatabaseData, dest destination.Baseline, metricsClient base.Client) (string, error) {
+	select {
+	case <-ctx.Done():
+		return "context_marked_done", fmt.Errorf("context marked done")
+	default:
+		// continue with process
+	}
+
 	if p.TopicToConfigFormatMap == nil {
 		return "", fmt.Errorf("failed to process, topicConfig is nil")
 	}

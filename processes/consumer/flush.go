@@ -2,6 +2,7 @@ package consumer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -14,6 +15,8 @@ import (
 	"github.com/artie-labs/transfer/lib/telemetry/metrics/base"
 	"github.com/artie-labs/transfer/models"
 )
+
+var ErrContextMarkedDone = errors.New("context marked done")
 
 type Args struct {
 	// If cooldown is passed in, we'll skip the flush if the table has been recently flushed
@@ -62,7 +65,15 @@ func Flush(ctx context.Context, inMemDB *models.DatabaseData, dest destination.B
 				return
 			}
 
-			retryCfg, err := retry.NewJitterRetryConfig(1_000, 30_000, 15, retry.AlwaysRetry)
+			retryCfg, err := retry.NewJitterRetryConfig(1_000, 30_000, 15, func(e error) bool {
+				switch {
+				case errors.Is(e, ErrContextMarkedDone):
+					return false
+				default:
+					return retry.AlwaysRetry(e)
+				}
+			})
+
 			if err != nil {
 				slog.Error("Failed to create retry config", slog.Any("err", err))
 				return
@@ -106,6 +117,12 @@ func Flush(ctx context.Context, inMemDB *models.DatabaseData, dest destination.B
 }
 
 func flush(ctx context.Context, dest destination.Baseline, _tableData *models.TableData, _tableName string, action string, clearTableConfig func(string)) (string, error) {
+	select {
+	case <-ctx.Done():
+		return "context_marked_done", ErrContextMarkedDone
+	default:
+		// continue with flush
+	}
 	// This is added so that we have a new temporary table suffix for each merge / append.
 	_tableData.ResetTempTableSuffix()
 
