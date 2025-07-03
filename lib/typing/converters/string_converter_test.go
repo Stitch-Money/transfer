@@ -1,7 +1,9 @@
 package converters
 
 import (
+	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/artie-labs/transfer/lib/typing"
 
@@ -130,8 +132,14 @@ func TestArrayConverter_Convert(t *testing.T) {
 func TestFloatConverter_Convert(t *testing.T) {
 	{
 		// Unexpected type
-		_, err := FloatConverter{}.Convert("foo")
-		assert.ErrorContains(t, err, `unexpected value: 'foo', type: string`)
+		_, err := FloatConverter{}.Convert(true)
+		assert.ErrorContains(t, err, `unexpected value: 'true', type: bool`)
+	}
+	{
+		// String
+		val, err := FloatConverter{}.Convert("123.45")
+		assert.NoError(t, err)
+		assert.Equal(t, "123.45", val)
 	}
 	{
 		// Float32
@@ -232,10 +240,10 @@ func TestStructConverter_Convert(t *testing.T) {
 		assert.Equal(t, `{"key":"__debezium_unavailable_value"}`, val)
 	}
 	{
-		// Normal string
+		// Struct
 		val, err := StructConverter{}.Convert(`{"foo":"bar"}`)
 		assert.NoError(t, err)
-		assert.Equal(t, `{"foo":"bar"}`, val)
+		assert.Equal(t, `"{\"foo\":\"bar\"}"`, val)
 	}
 	{
 		// Boolean
@@ -248,5 +256,94 @@ func TestStructConverter_Convert(t *testing.T) {
 		val, err := StructConverter{}.Convert(map[string]any{"foo": "bar"})
 		assert.NoError(t, err)
 		assert.Equal(t, `{"foo":"bar"}`, val)
+	}
+	{
+		// Number
+		val, err := StructConverter{}.Convert(123)
+		assert.NoError(t, err)
+		assert.Equal(t, "123", val)
+	}
+}
+
+func TestStringConverter_Convert(t *testing.T) {
+	conv := StringConverter{useNewMethod: true}
+	{
+		// String
+		val, err := conv.Convert("foo")
+		assert.NoError(t, err)
+		assert.Equal(t, "foo", val)
+	}
+	{
+		// Boolean
+		val, err := conv.Convert(true)
+		assert.NoError(t, err)
+		assert.Equal(t, "true", val)
+	}
+	{
+		// time.Time
+		val, err := conv.Convert(time.Date(2021, 1, 1, 2, 3, 4, 5678910, time.UTC))
+		assert.NoError(t, err)
+		assert.Equal(t, "2021-01-01T02:03:04.00567891Z", val)
+	}
+	{
+		// Integers
+		for _, value := range []any{42, int8(42), int16(42), int32(42), int64(42), float32(42), float64(42)} {
+			val, err := conv.Convert(value)
+			assert.NoError(t, err)
+			assert.Equal(t, "42", val)
+		}
+	}
+	{
+		// Floats
+		for _, value := range []any{123.45, float32(123.45), float64(123.45)} {
+			val, err := conv.Convert(value)
+			assert.NoError(t, err)
+			assert.Equal(t, "123.45", val)
+		}
+	}
+	{
+		// Decimal
+		val, err := conv.Convert(decimal.NewDecimal(numbers.MustParseDecimal("123.45")))
+		assert.NoError(t, err)
+		assert.Equal(t, "123.45", val)
+	}
+	{
+		// JSON
+		val, err := conv.Convert(map[string]any{"foo": "bar"})
+		assert.NoError(t, err)
+		assert.Equal(t, `{"foo":"bar"}`, val)
+
+		var obj any
+		assert.NoError(t, json.Unmarshal([]byte(val), &obj))
+		assert.Equal(t, map[string]any{"foo": "bar"}, obj)
+	}
+	{
+		// Array
+		val, err := conv.Convert([]string{"foo", "bar"})
+		assert.NoError(t, err)
+		assert.Equal(t, `["foo","bar"]`, val)
+
+		var arr any
+		assert.NoError(t, json.Unmarshal([]byte(val), &arr))
+		assert.Equal(t, []any{"foo", "bar"}, arr.([]any))
+	}
+}
+
+func TestTimestampNTZConverter_Convert(t *testing.T) {
+	_time := time.Date(2023, 4, 24, 17, 29, 5, 699_000_000, time.UTC)
+	{
+		// No location
+		value, err := NewTimestampNTZConverter("", nil).Convert(_time)
+		assert.NoError(t, err)
+		assert.Equal(t, "2023-04-24T17:29:05.699", value)
+	}
+	{
+		// With location
+		est, err := time.LoadLocation("America/New_York")
+		assert.NoError(t, err)
+
+		value, err := NewTimestampNTZConverter("", est).Convert(_time)
+		assert.NoError(t, err)
+		assert.Equal(t, "2023-04-24T13:29:05.699", value)
 	}
 }

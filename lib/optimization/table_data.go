@@ -9,6 +9,7 @@ import (
 	"github.com/artie-labs/transfer/lib/config"
 	"github.com/artie-labs/transfer/lib/config/constants"
 	"github.com/artie-labs/transfer/lib/kafkalib"
+	"github.com/artie-labs/transfer/lib/maputil"
 	"github.com/artie-labs/transfer/lib/size"
 	"github.com/artie-labs/transfer/lib/stringutil"
 	"github.com/artie-labs/transfer/lib/typing"
@@ -268,6 +269,39 @@ func (t *TableData) ShouldFlush(cfg config.Config) (bool, string) {
 	return false, ""
 }
 
+func (t *TableData) BuildColumnsToKeep() []string {
+	colsMap := maputil.NewOrderedMap[bool](false)
+	if t.Mode() == config.History {
+		colsMap.Add(constants.OperationColumnMarker, true)
+	}
+
+	if t.TopicConfig().IncludeArtieOperation {
+		colsMap.Add(constants.OperationColumnMarker, true)
+	}
+
+	if t.TopicConfig().SoftDelete {
+		colsMap.Add(constants.DeleteColumnMarker, true)
+	}
+
+	if t.TopicConfig().IncludeArtieUpdatedAt {
+		colsMap.Add(constants.UpdateColumnMarker, true)
+	}
+
+	if t.TopicConfig().IncludeDatabaseUpdatedAt {
+		colsMap.Add(constants.DatabaseUpdatedColumnMarker, true)
+	}
+
+	if t.TopicConfig().IncludeSourceMetadata {
+		colsMap.Add(constants.SourceMetadataColumnMarker, true)
+	}
+
+	if t.TopicConfig().IncludeFullSourceTableName {
+		colsMap.Add(constants.FullSourceTableNameColumnMarker, true)
+	}
+
+	return colsMap.Keys()
+}
+
 // MergeColumnsFromDestination - When running Transfer, we will have 2 column types.
 // 1) TableData (constructed in-memory)
 // 2) TableConfigCache (coming from the SQL DESCRIBE or equivalent statement) from the destination
@@ -318,13 +352,13 @@ func mergeColumn(inMemoryCol columns.Column, destCol columns.Column) columns.Col
 		inMemoryCol.KindDetails.OptionalIntegerKind = destCol.KindDetails.OptionalIntegerKind
 	}
 
-	// Copy over the decimal details
-	if destCol.KindDetails.ExtendedDecimalDetails != nil && inMemoryCol.KindDetails.ExtendedDecimalDetails == nil {
+	// If destination column details does have decimal details set and in-memory is not, then we should copy it over.
+	if !destCol.KindDetails.DecimalDetailsNotSet() && inMemoryCol.KindDetails.DecimalDetailsNotSet() {
 		inMemoryCol.KindDetails.ExtendedDecimalDetails = destCol.KindDetails.ExtendedDecimalDetails
 	}
 
 	// If the destination column does not have extended decimal details, we should remove it from the in-memory column as well
-	if destCol.KindDetails.ExtendedDecimalDetails == nil && inMemoryCol.KindDetails.ExtendedDecimalDetails != nil {
+	if destCol.KindDetails.DecimalDetailsNotSet() && !inMemoryCol.KindDetails.DecimalDetailsNotSet() {
 		inMemoryCol.KindDetails.ExtendedDecimalDetails = nil
 	}
 

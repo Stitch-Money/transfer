@@ -7,10 +7,10 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestGetUniqueTopicConfigs(t *testing.T) {
+func TestGetUniqueDatabaseAndSchemaPairs(t *testing.T) {
 	{
 		// No topic configs
-		assert.Empty(t, GetUniqueTopicConfigs(nil))
+		assert.Empty(t, GetUniqueDatabaseAndSchemaPairs(nil))
 	}
 	{
 		// 1 topic config
@@ -21,9 +21,9 @@ func TestGetUniqueTopicConfigs(t *testing.T) {
 			},
 		}
 
-		actual := GetUniqueTopicConfigs(tcs)
+		actual := GetUniqueDatabaseAndSchemaPairs(tcs)
 		assert.Len(t, actual, 1)
-		assert.Equal(t, *tcs[0], actual[0])
+		assert.Equal(t, tcs[0].BuildDatabaseAndSchemaPair(), actual[0])
 	}
 	{
 		// 2 topic configs (both the same)
@@ -38,9 +38,9 @@ func TestGetUniqueTopicConfigs(t *testing.T) {
 			},
 		}
 
-		actual := GetUniqueTopicConfigs(tcs)
+		actual := GetUniqueDatabaseAndSchemaPairs(tcs)
 		assert.Len(t, actual, 1)
-		assert.Equal(t, *tcs[0], actual[0])
+		assert.Equal(t, tcs[0].BuildDatabaseAndSchemaPair(), actual[0])
 	}
 	{
 		// 3 topic configs (2 the same)
@@ -59,10 +59,12 @@ func TestGetUniqueTopicConfigs(t *testing.T) {
 			},
 		}
 
-		actual := GetUniqueTopicConfigs(tcs)
+		actual := GetUniqueDatabaseAndSchemaPairs(tcs)
 		assert.Len(t, actual, 2)
-		assert.Equal(t, *tcs[0], actual[0])
-		assert.Equal(t, *tcs[2], actual[1])
+		assert.ElementsMatch(t, []DatabaseAndSchemaPair{
+			tcs[0].BuildDatabaseAndSchemaPair(),
+			tcs[2].BuildDatabaseAndSchemaPair(),
+		}, actual)
 	}
 }
 
@@ -109,13 +111,18 @@ func TestTopicConfig_Validate(t *testing.T) {
 		tc.CDCKeyFormat = validKeyFormat
 		assert.NoError(t, tc.Validate(), tc.String())
 	}
+
+	tc.ColumnsToInclude = []string{"col1", "col2"}
+	tc.ColumnsToExclude = []string{"col3"}
+	assert.ErrorContains(t, tc.Validate(), "cannot specify both columnsToInclude and columnsToExclude", tc.String())
+
+	tc.ColumnsToInclude = []string{}
+	assert.NoError(t, tc.Validate(), tc.String())
 }
 
 func TestTopicConfig_Load_ShouldSkip(t *testing.T) {
 	{
-		tc := TopicConfig{
-			SkippedOperations: "c, r, u",
-		}
+		tc := TopicConfig{SkippedOperations: "c, r, u"}
 		tc.Load()
 		for _, op := range []string{"c", "r", "u"} {
 			assert.True(t, tc.ShouldSkip(op), tc.String())
@@ -123,16 +130,12 @@ func TestTopicConfig_Load_ShouldSkip(t *testing.T) {
 		assert.False(t, tc.ShouldSkip("d"), tc.String())
 	}
 	{
-		tc := TopicConfig{
-			SkippedOperations: "c",
-		}
+		tc := TopicConfig{SkippedOperations: "c"}
 		tc.Load()
 		assert.True(t, tc.ShouldSkip("c"), tc.String())
 	}
 	{
-		tc := TopicConfig{
-			SkippedOperations: "d",
-		}
+		tc := TopicConfig{SkippedOperations: "d"}
 		tc.Load()
 		assert.True(t, tc.ShouldSkip("d"), tc.String())
 	}

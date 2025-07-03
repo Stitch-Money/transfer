@@ -60,58 +60,63 @@ func TestRedshiftDialect_DataTypeForKind(t *testing.T) {
 func TestRedshiftDialect_KindForDataType(t *testing.T) {
 	dialect := RedshiftDialect{}
 	{
+		// Invalid
+		_, err := dialect.KindForDataType("invalid")
+		assert.True(t, typing.IsUnsupportedDataTypeError(err))
+	}
+	{
 		// Integers
 		{
 			// Small integer
-			kd, err := dialect.KindForDataType("smallint", "")
+			kd, err := dialect.KindForDataType("smallint")
 			assert.NoError(t, err)
 			assert.Equal(t, typing.KindDetails{Kind: typing.Integer.Kind, OptionalIntegerKind: typing.ToPtr(typing.SmallIntegerKind)}, kd)
 		}
 		{
 			{
 				// Regular integers (upper)
-				kd, err := dialect.KindForDataType("INTEGER", "")
+				kd, err := dialect.KindForDataType("INTEGER")
 				assert.NoError(t, err)
 				assert.Equal(t, typing.KindDetails{Kind: typing.Integer.Kind, OptionalIntegerKind: typing.ToPtr(typing.IntegerKind)}, kd)
 			}
 			{
 				// Regular integers (lower)
-				kd, err := dialect.KindForDataType("integer", "")
+				kd, err := dialect.KindForDataType("integer")
 				assert.NoError(t, err)
 				assert.Equal(t, typing.KindDetails{Kind: typing.Integer.Kind, OptionalIntegerKind: typing.ToPtr(typing.IntegerKind)}, kd)
 			}
 		}
 		{
 			// Big integer
-			kd, err := dialect.KindForDataType("bigint", "")
+			kd, err := dialect.KindForDataType("bigint")
 			assert.NoError(t, err)
 			assert.Equal(t, typing.KindDetails{Kind: typing.Integer.Kind, OptionalIntegerKind: typing.ToPtr(typing.BigIntegerKind)}, kd)
 		}
 	}
 	{
 		// Double
-		{
-			kd, err := dialect.KindForDataType("double precision", "")
-			assert.NoError(t, err)
-			assert.Equal(t, typing.Float, kd)
+		doubleTypeMap := map[string]typing.KindDetails{
+			"double precision": typing.Float,
+			"DOUBLE precision": typing.Float,
 		}
-		{
-			kd, err := dialect.KindForDataType("DOUBLE precision", "")
+
+		for rawType, expectedKind := range doubleTypeMap {
+			kd, err := dialect.KindForDataType(rawType)
 			assert.NoError(t, err)
-			assert.Equal(t, typing.Float, kd)
+			assert.Equal(t, expectedKind, kd)
 		}
 	}
 	{
 		// Numeric
 		{
-			kd, err := dialect.KindForDataType("numeric(5,2)", "")
+			kd, err := dialect.KindForDataType("numeric(5,2)")
 			assert.NoError(t, err)
 			assert.Equal(t, typing.EDecimal.Kind, kd.Kind)
 			assert.Equal(t, int32(5), kd.ExtendedDecimalDetails.Precision())
 			assert.Equal(t, int32(2), kd.ExtendedDecimalDetails.Scale())
 		}
 		{
-			kd, err := dialect.KindForDataType("numeric(5,5)", "")
+			kd, err := dialect.KindForDataType("numeric(5,5)")
 			assert.NoError(t, err)
 			assert.Equal(t, typing.EDecimal.Kind, kd.Kind)
 			assert.Equal(t, int32(5), kd.ExtendedDecimalDetails.Precision())
@@ -120,39 +125,45 @@ func TestRedshiftDialect_KindForDataType(t *testing.T) {
 	}
 	{
 		// Boolean
-		kd, err := dialect.KindForDataType("boolean", "")
+		kd, err := dialect.KindForDataType("boolean")
 		assert.NoError(t, err)
 		assert.Equal(t, typing.Boolean, kd)
 	}
 	{
 		// String with precision
-		kd, err := dialect.KindForDataType("character varying", "65535")
+		kd, err := dialect.KindForDataType("character varying(65535)")
 		assert.NoError(t, err)
 		assert.Equal(t, typing.KindDetails{Kind: typing.String.Kind, OptionalStringPrecision: typing.ToPtr(int32(65535))}, kd)
+	}
+	{
+		// Character
+		kd, err := dialect.KindForDataType("character")
+		assert.NoError(t, err)
+		assert.Equal(t, typing.KindDetails{Kind: typing.String.Kind}, kd)
 	}
 	{
 		// Times
 		{
 			// TimestampTZ
-			kd, err := dialect.KindForDataType("timestamp with time zone", "")
+			kd, err := dialect.KindForDataType("timestamp with time zone")
 			assert.NoError(t, err)
 			assert.Equal(t, typing.TimestampTZ, kd)
 		}
 		{
 			// TimestampNTZ
-			kd, err := dialect.KindForDataType("timestamp without time zone", "")
+			kd, err := dialect.KindForDataType("timestamp without time zone")
 			assert.NoError(t, err)
 			assert.Equal(t, typing.TimestampNTZ, kd)
 		}
 		{
 			// Time
-			kd, err := dialect.KindForDataType("time without time zone", "")
+			kd, err := dialect.KindForDataType("time without time zone")
 			assert.NoError(t, err)
 			assert.Equal(t, typing.Time, kd)
 		}
 		{
 			// Date
-			kd, err := dialect.KindForDataType("date", "")
+			kd, err := dialect.KindForDataType("date")
 			assert.NoError(t, err)
 			assert.Equal(t, typing.Date, kd)
 		}

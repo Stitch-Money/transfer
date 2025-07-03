@@ -22,7 +22,7 @@ func Merge(ctx context.Context, dest destination.Destination, tableData *optimiz
 		return nil
 	}
 
-	tableID := dest.IdentifierFor(tableData.TopicConfig(), tableData.Name())
+	tableID := dest.IdentifierFor(tableData.TopicConfig().BuildDatabaseAndSchemaPair(), tableData.Name())
 	tableConfig, err := dest.GetTableConfig(tableID, tableData.TopicConfig().DropDeletedColumns)
 	if err != nil {
 		return fmt.Errorf("failed to get table config: %w", err)
@@ -31,10 +31,7 @@ func Merge(ctx context.Context, dest destination.Destination, tableData *optimiz
 	srcKeysMissing, targetKeysMissing := columns.DiffAndFilter(
 		tableData.ReadOnlyInMemoryCols().GetColumns(),
 		tableConfig.GetColumns(),
-		tableData.TopicConfig().SoftDelete,
-		tableData.TopicConfig().IncludeArtieUpdatedAt,
-		tableData.TopicConfig().IncludeDatabaseUpdatedAt,
-		tableData.Mode(),
+		tableData.BuildColumnsToKeep(),
 	)
 
 	if tableConfig.CreateTable() {
@@ -57,9 +54,9 @@ func Merge(ctx context.Context, dest destination.Destination, tableData *optimiz
 		return fmt.Errorf("failed to merge columns from destination: %w for table %q", err, tableData.Name())
 	}
 
-	temporaryTableID := TempTableIDWithSuffix(dest.IdentifierFor(tableData.TopicConfig(), tableData.Name()), tableData.TempTableSuffix())
+	temporaryTableID := TempTableIDWithSuffix(dest.IdentifierFor(tableData.TopicConfig().BuildDatabaseAndSchemaPair(), tableData.Name()), tableData.TempTableSuffix())
 	defer func() {
-		if dropErr := ddl.DropTemporaryTable(dest, temporaryTableID, false); dropErr != nil {
+		if dropErr := ddl.DropTemporaryTable(ctx, dest, temporaryTableID, false); dropErr != nil {
 			slog.Warn("Failed to drop temporary table", slog.Any("err", dropErr), slog.String("tableName", temporaryTableID.FullyQualifiedName()))
 		}
 	}()
@@ -76,7 +73,7 @@ func Merge(ctx context.Context, dest destination.Destination, tableData *optimiz
 
 		var backfillErr error
 		for attempts := 0; attempts < backfillMaxRetries; attempts++ {
-			backfillErr = BackfillColumn(dest, col, tableID)
+			backfillErr = BackfillColumn(ctx, dest, col, tableID)
 			if backfillErr == nil {
 				err = tableConfig.UpsertColumn(col.Name(), columns.UpsertColumnArg{
 					Backfilled: typing.ToPtr(true),
@@ -151,7 +148,7 @@ func Merge(ctx context.Context, dest destination.Destination, tableData *optimiz
 		return fmt.Errorf("failed to generate merge statements: %w", err)
 	}
 
-	if err = destination.ExecStatements(dest, mergeStatements); err != nil {
+	if err = destination.ExecContextStatements(ctx, dest, mergeStatements); err != nil {
 		return fmt.Errorf("failed to execute merge statements: %w", err)
 	}
 	return nil

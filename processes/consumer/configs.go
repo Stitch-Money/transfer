@@ -34,6 +34,16 @@ func (t *TcFmtMap) GetTopicFmt(topic string) (TopicConfigFormatter, bool) {
 	return tcFmt, isOk
 }
 
+func (t *TcFmtMap) Topics() []string {
+	t.Lock()
+	defer t.Unlock()
+	var topics []string
+	for topic := range t.tc {
+		topics = append(topics, topic)
+	}
+	return topics
+}
+
 type TopicConfigFormatter struct {
 	tc kafkalib.TopicConfig
 	cdc.Format

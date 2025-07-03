@@ -14,6 +14,17 @@ import (
 	"github.com/artie-labs/transfer/lib/typing/decimal"
 )
 
+func TestTableData_WipeData(t *testing.T) {
+	td := NewTableData(nil, config.Replication, nil, kafkalib.TopicConfig{}, "foo")
+	td.containsHardDeletes = true
+
+	assert.True(t, td.ContainsHardDeletes())
+
+	// After we wipe the table data, hard delete flag should stick
+	td.WipeData()
+	assert.True(t, td.ContainsHardDeletes())
+}
+
 func TestTableData_ReadOnlyInMemoryCols(t *testing.T) {
 	// Making sure the columns are actually read only.
 	var cols columns.Columns
@@ -250,23 +261,39 @@ func TestMergeColumn(t *testing.T) {
 		assert.Equal(t, typing.SmallIntegerKind, *col.KindDetails.OptionalIntegerKind)
 	}
 	{
-		// Decimal details get copied over
-		decimalCol := columns.NewColumn("foo", typing.EDecimal)
-		details := decimal.NewDetails(5, 2)
-		decimalCol.KindDetails.ExtendedDecimalDetails = &details
+		// Decimal details
+		{
+			// Decimal details get copied over from destination column
+			decimalCol := columns.NewColumn("foo", typing.EDecimal)
+			details := decimal.NewDetails(5, 2)
+			decimalCol.KindDetails.ExtendedDecimalDetails = &details
 
-		col := mergeColumn(columns.NewColumn("foo", typing.String), decimalCol)
-		assert.Equal(t, details, *col.KindDetails.ExtendedDecimalDetails)
-	}
-	{
-		// Decimal details should be removed when destination column doesn't have them
-		inMemoryCol := columns.NewColumn("foo", typing.EDecimal)
-		details := decimal.NewDetails(5, 2)
-		inMemoryCol.KindDetails.ExtendedDecimalDetails = &details
+			col := mergeColumn(columns.NewColumn("foo", typing.String), decimalCol)
+			assert.Equal(t, details, *col.KindDetails.ExtendedDecimalDetails)
+		}
+		{
+			// Decimal details should get copied from destination column (in-memory column is not set)
+			decimalCol := columns.NewColumn("foo", typing.EDecimal)
+			destinationColumnDetails := decimal.NewDetails(5, 2)
+			decimalCol.KindDetails.ExtendedDecimalDetails = &destinationColumnDetails
 
-		destCol := columns.NewColumn("foo", typing.EDecimal)
-		col := mergeColumn(inMemoryCol, destCol)
-		assert.Nil(t, col.KindDetails.ExtendedDecimalDetails)
+			inMemoryCol := columns.NewColumn("foo", typing.EDecimal)
+			inMemoryDetails := decimal.NewDetails(decimal.PrecisionNotSpecified, decimal.DefaultScale)
+			inMemoryCol.KindDetails.ExtendedDecimalDetails = &inMemoryDetails
+
+			col := mergeColumn(inMemoryCol, decimalCol)
+			assert.Equal(t, destinationColumnDetails, *col.KindDetails.ExtendedDecimalDetails)
+		}
+		{
+			// Decimal details should be removed when destination column doesn't have them
+			inMemoryCol := columns.NewColumn("foo", typing.EDecimal)
+			details := decimal.NewDetails(5, 2)
+			inMemoryCol.KindDetails.ExtendedDecimalDetails = &details
+
+			destCol := columns.NewColumn("foo", typing.EDecimal)
+			col := mergeColumn(inMemoryCol, destCol)
+			assert.Nil(t, col.KindDetails.ExtendedDecimalDetails)
+		}
 	}
 	{
 		// Time details get copied over
@@ -278,5 +305,43 @@ func TestMergeColumn(t *testing.T) {
 			col := mergeColumn(timestampNTZColumn, timestampTZColumn)
 			assert.Equal(t, typing.TimestampTZ, col.KindDetails)
 		}
+	}
+}
+
+func TestTableData_BuildColumnsToKeep(t *testing.T) {
+	{
+		// Nothing except history mode should give us the operation column
+		td := TableData{mode: config.History}
+		assert.ElementsMatch(t, []string{constants.OperationColumnMarker}, td.BuildColumnsToKeep())
+	}
+	{
+		// If history mode and include artie operation are both true, we should only get the operation column once
+		td := TableData{mode: config.History, topicConfig: kafkalib.TopicConfig{IncludeArtieOperation: true}}
+		assert.ElementsMatch(t, []string{constants.OperationColumnMarker}, td.BuildColumnsToKeep())
+	}
+	{
+		// Soft delete is enabled
+		td := TableData{mode: config.Replication, topicConfig: kafkalib.TopicConfig{SoftDelete: true}}
+		assert.ElementsMatch(t, []string{constants.DeleteColumnMarker}, td.BuildColumnsToKeep())
+	}
+	{
+		// Artie + DB updated at are both true
+		td := TableData{mode: config.Replication, topicConfig: kafkalib.TopicConfig{IncludeArtieUpdatedAt: true, IncludeDatabaseUpdatedAt: true}}
+		assert.ElementsMatch(t, []string{constants.UpdateColumnMarker, constants.DatabaseUpdatedColumnMarker}, td.BuildColumnsToKeep())
+	}
+	{
+		// Include artie operation is true
+		td := TableData{mode: config.Replication, topicConfig: kafkalib.TopicConfig{IncludeArtieOperation: true}}
+		assert.ElementsMatch(t, []string{constants.OperationColumnMarker}, td.BuildColumnsToKeep())
+	}
+	{
+		// Include source metadata is true
+		td := TableData{mode: config.Replication, topicConfig: kafkalib.TopicConfig{IncludeSourceMetadata: true}}
+		assert.ElementsMatch(t, []string{constants.SourceMetadataColumnMarker}, td.BuildColumnsToKeep())
+	}
+	{
+		// Include full source table name is true
+		td := TableData{mode: config.Replication, topicConfig: kafkalib.TopicConfig{IncludeFullSourceTableName: true}}
+		assert.ElementsMatch(t, []string{constants.FullSourceTableNameColumnMarker}, td.BuildColumnsToKeep())
 	}
 }

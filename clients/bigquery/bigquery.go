@@ -7,7 +7,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"time"
 
 	"cloud.google.com/go/bigquery"
 	"cloud.google.com/go/bigquery/storage/managedwriter"
@@ -47,8 +46,18 @@ type Store struct {
 	db.Store
 }
 
-func (s *Store) DropTable(_ context.Context, _ sql.TableIdentifier) error {
-	return fmt.Errorf("not supported")
+func (s *Store) DropTable(ctx context.Context, tableID sql.TableIdentifier) error {
+	if !tableID.AllowToDrop() {
+		return fmt.Errorf("table %q is not allowed to be dropped", tableID.FullyQualifiedName())
+	}
+
+	if _, err := s.ExecContext(ctx, s.Dialect().BuildDropTableQuery(tableID)); err != nil {
+		return fmt.Errorf("failed to drop table: %w", err)
+	}
+
+	// We'll then clear it from our cache
+	s.configMap.RemoveTable(tableID)
+	return nil
 }
 
 func (s *Store) Append(ctx context.Context, tableData *optimization.TableData, useTempTable bool) error {
@@ -61,10 +70,10 @@ func (s *Store) Append(ctx context.Context, tableData *optimization.TableData, u
 	// We can simplify this once Google has fully rolled out the ability to execute DML on recently streamed data
 	// See: https://cloud.google.com/bigquery/docs/write-api#use_data_manipulation_language_dml_with_recently_streamed_data
 	// For now, we'll need to append this to a temporary table and then append temporary table onto the target table
-	tableID := s.IdentifierFor(tableData.TopicConfig(), tableData.Name())
+	tableID := s.IdentifierFor(tableData.TopicConfig().BuildDatabaseAndSchemaPair(), tableData.Name())
 	temporaryTableID := shared.TempTableID(tableID)
 
-	defer func() { _ = ddl.DropTemporaryTable(s, temporaryTableID, false) }()
+	defer func() { _ = ddl.DropTemporaryTable(ctx, s, temporaryTableID, false) }()
 
 	err := shared.Append(ctx, s, tableData, types.AdditionalSettings{
 		ColumnSettings: s.config.SharedDestinationSettings.ColumnSettings,
@@ -83,7 +92,7 @@ func (s *Store) Append(ctx context.Context, tableData *optimization.TableData, u
 		temporaryTableID.FullyQualifiedName(),
 	)
 
-	if _, err = s.Exec(query); err != nil {
+	if _, err = s.ExecContext(ctx, query); err != nil {
 		return fmt.Errorf("failed to insert data into target table: %w", err)
 	}
 
@@ -106,43 +115,11 @@ func (s *Store) PrepareTemporaryTable(ctx context.Context, tableData *optimizati
 		return fmt.Errorf("failed to put table: %w", err)
 	}
 
-	if s.auditRows {
-		return s.auditStagingTable(ctx, bqTempTableID, tableData)
-	}
-
 	return nil
 }
 
-func (s *Store) auditStagingTable(ctx context.Context, bqTempTableID dialect.TableIdentifier, tableData *optimization.TableData) error {
-	var stagingTableRowsCount uint64
-	expectedRowCount := uint64(tableData.NumberOfRows())
-	// The streaming metadata does not appear right away, we'll wait up to 5s for it to appear.
-	for i := 0; i < 10; i++ {
-		time.Sleep(500 * time.Millisecond)
-		resp, err := s.bqClient.Dataset(bqTempTableID.Dataset()).Table(bqTempTableID.Table()).Metadata(ctx)
-		if err != nil {
-			return fmt.Errorf("failed to get %q metadata: %w", bqTempTableID.FullyQualifiedName(), err)
-		}
-
-		if stagingTableRowsCount == 0 {
-			stagingTableRowsCount = resp.NumRows
-		}
-
-		if resp.StreamingBuffer != nil {
-			stagingTableRowsCount += resp.StreamingBuffer.EstimatedRows
-		}
-
-		// [stagingTableRowsCount] could be higher since AppendRows is at least once delivery.
-		if stagingTableRowsCount >= expectedRowCount {
-			return nil
-		}
-	}
-
-	return fmt.Errorf("temporary table row count mismatch, expected: %d, got: %d", expectedRowCount, stagingTableRowsCount)
-}
-
-func (s *Store) IdentifierFor(topicConfig kafkalib.TopicConfig, table string) sql.TableIdentifier {
-	return dialect.NewTableIdentifier(s.config.BigQuery.ProjectID, topicConfig.Database, table)
+func (s *Store) IdentifierFor(databaseAndSchema kafkalib.DatabaseAndSchemaPair, table string) sql.TableIdentifier {
+	return dialect.NewTableIdentifier(s.config.BigQuery.ProjectID, databaseAndSchema.Database, table)
 }
 
 func (s *Store) GetTableConfig(tableID sql.TableIdentifier, dropDeletedColumns bool) (*types.DestinationTableConfig, error) {
@@ -196,11 +173,12 @@ func (s *Store) putTable(ctx context.Context, bqTableID dialect.TableIdentifier,
 	}
 	defer managedWriterClient.Close()
 
+	// Create a committed stream for exactly-once semantics
 	managedStream, err := managedWriterClient.NewManagedStream(ctx,
 		managedwriter.WithDestinationTable(
 			managedwriter.TableParentFromParts(bqTableID.ProjectID(), bqTableID.Dataset(), bqTableID.Table()),
 		),
-		managedwriter.WithType(managedwriter.DefaultStream),
+		managedwriter.WithType(managedwriter.CommittedStream),
 		managedwriter.WithSchemaDescriptor(schemaDescriptor),
 		managedwriter.EnableWriteRetries(true),
 	)
@@ -223,7 +201,7 @@ func (s *Store) putTable(ctx context.Context, bqTableID dialect.TableIdentifier,
 		return bytes, nil
 	}
 
-	return batch.BySize(tableData.Rows(), maxRequestByteSize, false, encoder, func(chunk [][]byte, _ []map[string]any) error {
+	err = batch.BySize(tableData.Rows(), maxRequestByteSize, false, encoder, func(chunk [][]byte, _ []map[string]any) error {
 		result, err := managedStream.AppendRows(ctx, chunk)
 		if err != nil {
 			return fmt.Errorf("failed to append rows: %w", err)
@@ -231,6 +209,23 @@ func (s *Store) putTable(ctx context.Context, bqTableID dialect.TableIdentifier,
 
 		resp, err := result.FullResponse(ctx)
 		if err != nil {
+			if resp != nil {
+				if rowErrs := resp.GetRowErrors(); len(rowErrs) > 0 {
+					// Just log the first few errors
+					var errors []any
+					for i, rowErr := range rowErrs {
+						if i > 5 {
+							break
+						}
+
+						errors = append(errors, rowErr)
+					}
+
+					return fmt.Errorf("failed to append rows, encountered %d errors: %v", len(rowErrs), errors)
+				}
+
+			}
+
 			return fmt.Errorf("failed to get response: %w", err)
 		}
 
@@ -244,16 +239,33 @@ func (s *Store) putTable(ctx context.Context, bqTableID dialect.TableIdentifier,
 
 		return nil
 	})
+
+	if err != nil {
+		return fmt.Errorf("failed to write rows: %w", err)
+	}
+
+	// Get the final row count from the stream
+	rowCount, err := managedStream.Finalize(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to finalize stream: %w", err)
+	}
+
+	// Verify that we wrote all expected rows
+	expectedRows := uint64(tableData.NumberOfRows())
+	if uint64(rowCount) != expectedRows {
+		return fmt.Errorf("row count mismatch after write, expected: %d, got: %d", expectedRows, rowCount)
+	}
+
+	return nil
 }
 
-func (s *Store) Dedupe(tableID sql.TableIdentifier, primaryKeys []string, includeArtieUpdatedAt bool) error {
+func (s *Store) Dedupe(ctx context.Context, tableID sql.TableIdentifier, primaryKeys []string, includeArtieUpdatedAt bool) error {
 	stagingTableID := shared.TempTableID(tableID)
-
 	dedupeQueries := s.Dialect().BuildDedupeQueries(tableID, stagingTableID, primaryKeys, includeArtieUpdatedAt)
 
-	defer func() { _ = ddl.DropTemporaryTable(s, stagingTableID, false) }()
+	defer func() { _ = ddl.DropTemporaryTable(ctx, s, stagingTableID, false) }()
 
-	return destination.ExecStatements(s, dedupeQueries)
+	return destination.ExecContextStatements(ctx, s, dedupeQueries)
 }
 
 func (s *Store) SweepTemporaryTables(_ context.Context) error {

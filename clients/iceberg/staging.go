@@ -5,41 +5,52 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"strings"
 
-	"github.com/artie-labs/transfer/lib/awslib"
+	"github.com/artie-labs/transfer/clients/shared"
+	"github.com/artie-labs/transfer/lib/config"
 	"github.com/artie-labs/transfer/lib/config/constants"
-	"github.com/artie-labs/transfer/lib/csvwriter"
 	"github.com/artie-labs/transfer/lib/destination/types"
 	"github.com/artie-labs/transfer/lib/optimization"
 	"github.com/artie-labs/transfer/lib/sql"
 	"github.com/artie-labs/transfer/lib/typing"
+	"github.com/artie-labs/transfer/lib/typing/columns"
+	"github.com/artie-labs/transfer/lib/typing/converters"
 	"github.com/artie-labs/transfer/lib/typing/values"
 )
 
-func castColValStaging(colVal any, colKind typing.KindDetails) (string, error) {
+func (s Store) castColValStaging(colVal any, colKind typing.KindDetails, cfg config.SharedDestinationSettings) (shared.ValueConvertResponse, error) {
 	if colVal == nil {
-		return constants.NullValuePlaceholder, nil
+		return shared.ValueConvertResponse{Value: constants.NullValuePlaceholder}, nil
 	}
 
-	value, err := values.ToString(colVal, colKind)
+	value, err := values.ToStringOpts(colVal, colKind, converters.GetStringConverterOpts{
+		UseNewStringMethod: cfg.UseNewStringMethod,
+		Location:           s.location,
+	})
 	if err != nil {
-		return "", err
+		return shared.ValueConvertResponse{}, err
 	}
 
-	return value, nil
+	return shared.ValueConvertResponse{Value: value}, nil
+}
+
+func (s Store) buildColumnParts(columns []columns.Column) []string {
+	var colParts []string
+	for _, col := range columns {
+		colPart := fmt.Sprintf("%s %s",
+			s.Dialect().BuildIdentifier(col.Name()),
+			s.Dialect().DataTypeForKind(col.KindDetails, col.PrimaryKey(), config.SharedDestinationColumnSettings{}),
+		)
+
+		colParts = append(colParts, colPart)
+	}
+
+	return colParts
 }
 
 func (s Store) uploadToS3(ctx context.Context, fp string) (string, error) {
-	s3URI, err := awslib.UploadLocalFileToS3(ctx, awslib.UploadArgs{
-		Bucket:                     s.config.Iceberg.S3Tables.Bucket,
-		FilePath:                   fp,
-		OverrideAWSAccessKeyID:     s.config.Iceberg.S3Tables.AwsAccessKeyID,
-		OverrideAWSAccessKeySecret: s.config.Iceberg.S3Tables.AwsSecretAccessKey,
-		Region:                     s.config.Iceberg.S3Tables.Region,
-	})
-
+	s3URI, err := s.s3Client.UploadLocalFileToS3(ctx, s.config.Iceberg.S3Tables.Bucket, "", fp)
 	if err != nil {
 		return "", fmt.Errorf("failed to upload to s3: %w", err)
 	}
@@ -51,45 +62,13 @@ func (s Store) uploadToS3(ctx context.Context, fp string) (string, error) {
 }
 
 func (s *Store) writeTemporaryTableFile(tableData *optimization.TableData, newTableID sql.TableIdentifier) (string, error) {
-	fp := filepath.Join(os.TempDir(), fmt.Sprintf("%s.csv.gz", newTableID.FullyQualifiedName()))
-	gzipWriter, err := csvwriter.NewGzipWriter(fp)
+	tempTableDataFile := shared.NewTemporaryDataFile(newTableID)
+	file, _, err := tempTableDataFile.WriteTemporaryTableFile(tableData, s.castColValStaging, s.config.SharedDestinationSettings)
 	if err != nil {
-		return "", fmt.Errorf("failed to create gzip writer: %w", err)
+		return "", fmt.Errorf("failed to write temporary table file: %w", err)
 	}
 
-	defer gzipWriter.Close()
-
-	columns := tableData.ReadOnlyInMemoryCols().ValidColumns()
-	headers := make([]string, len(columns))
-	for i, col := range columns {
-		headers[i] = col.Name()
-	}
-
-	if err = gzipWriter.Write(headers); err != nil {
-		return "", fmt.Errorf("failed to write headers: %w", err)
-	}
-
-	for _, row := range tableData.Rows() {
-		var csvRow []string
-		for _, col := range columns {
-			castedValue, castErr := castColValStaging(row[col.Name()], col.KindDetails)
-			if castErr != nil {
-				return "", fmt.Errorf("failed to cast value '%v': %w", row[col.Name()], castErr)
-			}
-
-			csvRow = append(csvRow, castedValue)
-		}
-
-		if err = gzipWriter.Write(csvRow); err != nil {
-			return "", fmt.Errorf("failed to write to csv: %w", err)
-		}
-	}
-
-	if err = gzipWriter.Flush(); err != nil {
-		return "", fmt.Errorf("failed to flush gzip writer: %w", err)
-	}
-
-	return fp, nil
+	return file.FilePath, nil
 }
 
 func (s Store) PrepareTemporaryTable(ctx context.Context, tableData *optimization.TableData, dwh *types.DestinationTableConfig, tempTableID sql.TableIdentifier) error {
@@ -111,7 +90,7 @@ func (s Store) PrepareTemporaryTable(ctx context.Context, tableData *optimizatio
 	}
 
 	// Load the data into a temporary view
-	command := s.Dialect().BuildCreateTemporaryView(tempTableID.EscapedTable(), s3URI)
+	command := s.Dialect().BuildCreateTemporaryView(tempTableID.EscapedTable(), s.buildColumnParts(tableData.ReadOnlyInMemoryCols().ValidColumns()), s3URI)
 	if err := s.apacheLivyClient.ExecContext(ctx, command); err != nil {
 		return fmt.Errorf("failed to load temporary table: %w", err)
 	}

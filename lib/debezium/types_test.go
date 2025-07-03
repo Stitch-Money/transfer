@@ -54,6 +54,16 @@ func TestField_ShouldSetDefaultValue(t *testing.T) {
 		assert.False(t, field.ShouldSetDefaultValue(time.Time{}))
 		assert.False(t, field.ShouldSetDefaultValue(time.Unix(0, 0)))
 	}
+	{
+		// Empty map
+		field := Field{}
+		assert.True(t, field.ShouldSetDefaultValue(map[string]any{}))
+	}
+	{
+		// Array
+		field := Field{}
+		assert.True(t, field.ShouldSetDefaultValue([]any{}))
+	}
 }
 
 func TestToInt64(t *testing.T) {
@@ -62,6 +72,12 @@ func TestToInt64(t *testing.T) {
 		actual, err := toInt64(12321)
 		assert.NoError(t, err)
 		assert.Equal(t, int64(12321), actual)
+	}
+	{
+		// int8
+		actual, err := toInt64(int8(12))
+		assert.NoError(t, err)
+		assert.Equal(t, int64(12), actual)
 	}
 	{
 		// int16
@@ -146,7 +162,7 @@ func TestField_ParseValue(t *testing.T) {
 			// Valid
 			value, err := field.ParseValue(`{"foo": "bar", "foo": "bar"}`)
 			assert.NoError(t, err)
-			assert.Equal(t, `{"foo":"bar"}`, value)
+			assert.Equal(t, map[string]any{"foo": "bar"}, value)
 		}
 		{
 			// Malformed
@@ -163,29 +179,37 @@ func TestField_ParseValue(t *testing.T) {
 			// Array
 			val, err := field.ParseValue(`[{"foo":"bar", "foo": "bar"}, {"hello":"world"}, {"dusty":"the mini aussie"}]`)
 			assert.NoError(t, err)
-			assert.Equal(t, `[{"foo":"bar"},{"hello":"world"},{"dusty":"the mini aussie"}]`, val)
+			assert.Equal(t, []any{map[string]any{"foo": "bar"}, map[string]any{"hello": "world"}, map[string]any{"dusty": "the mini aussie"}}, val)
 		}
 		{
 			// Array of objects
 			val, err := field.ParseValue(`[[{"foo":"bar", "foo": "bar"}], [{"hello":"world"}, {"dusty":"the mini aussie"}]]`)
 			assert.NoError(t, err)
-			assert.Equal(t, `[[{"foo":"bar"}],[{"hello":"world"},{"dusty":"the mini aussie"}]]`, val)
+			assert.Equal(t, []any{[]any{map[string]any{"foo": "bar"}}, []any{map[string]any{"hello": "world"}, map[string]any{"dusty": "the mini aussie"}}}, val)
 		}
 	}
 	{
 		// Array
-		field := Field{Type: Array, ItemsMetadata: &Item{DebeziumType: JSON}}
+		field := Field{Type: Array, ItemsMetadata: &Field{DebeziumType: JSON}}
 		value, err := field.ParseValue([]any{`{"foo": "bar", "foo": "bar"}`, `{"hello": "world"}`})
 		assert.NoError(t, err)
 		assert.Len(t, value.([]any), 2)
-		assert.Equal(t, map[string]any{"foo": "bar"}, value.([]any)[0])
-		assert.Equal(t, map[string]any{"hello": "world"}, value.([]any)[1])
+		assert.ElementsMatch(t, []any{map[string]any{"foo": "bar"}, map[string]any{"hello": "world"}}, value)
 	}
 	{
-		// Int32
-		value, err := Field{Type: Int32}.ParseValue(float64(3))
-		assert.NoError(t, err)
-		assert.Equal(t, int64(3), value)
+		// Integers
+		{
+			// Int8
+			value, err := Field{Type: Int8}.ParseValue(float64(3))
+			assert.NoError(t, err)
+			assert.Equal(t, int64(3), value)
+		}
+		{
+			// Int32
+			value, err := Field{Type: Int32}.ParseValue(float64(3))
+			assert.NoError(t, err)
+			assert.Equal(t, int64(3), value)
+		}
 	}
 	{
 		// Decimal
@@ -283,6 +307,16 @@ func TestField_ParseValue(t *testing.T) {
 			val, err := field.ParseValue(map[string]any{"srid": 4326, "wkb": "AQEAACDmEAAAAAAAAADAXkAAAAAAAIBDwA=="})
 			assert.NoError(t, err)
 			assert.Equal(t, `{"type":"Feature","geometry":{"type":"Point","coordinates":[123,-39]},"properties":null}`, val)
+		}
+	}
+	{
+		// Arrays
+		{
+			// Array of dates
+			field := Field{Type: Array, ItemsMetadata: &Field{Type: Int32, DebeziumType: Date}}
+			value, err := field.ParseValue([]any{20089, 20103, 20136})
+			assert.NoError(t, err)
+			assert.Equal(t, []any{"2025-01-01", "2025-01-15", "2025-02-17"}, value)
 		}
 	}
 	{

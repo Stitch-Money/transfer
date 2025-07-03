@@ -40,7 +40,7 @@ func (d *DDLTestSuite) TestAlterTableDropColumnsBigQuery() {
 		cols.AddColumn(columns.NewColumn(colName, kindDetails))
 	}
 
-	tableID := d.bigQueryStore.IdentifierFor(td.TopicConfig(), td.Name())
+	tableID := d.bigQueryStore.IdentifierFor(td.TopicConfig().BuildDatabaseAndSchemaPair(), td.Name())
 	fqName := tableID.FullyQualifiedName()
 	originalColumnLength := len(cols.GetColumns())
 	d.bigQueryStore.GetConfigMap().AddTable(tableID, types.NewDestinationTableConfig(cols.GetColumns(), true))
@@ -190,7 +190,7 @@ func (d *DDLTestSuite) TestAlterTableDropColumnsBigQuerySafety() {
 		cols.AddColumn(columns.NewColumn(colName, kindDetails))
 	}
 
-	tableID := d.bigQueryStore.IdentifierFor(td.TopicConfig(), td.Name())
+	tableID := d.bigQueryStore.IdentifierFor(td.TopicConfig().BuildDatabaseAndSchemaPair(), td.Name())
 	d.bigQueryStore.GetConfigMap().AddTable(tableID, types.NewDestinationTableConfig(cols.GetColumns(), false))
 	tc := d.bigQueryStore.GetConfigMap().GetTableConfig(tableID)
 
@@ -201,12 +201,12 @@ func (d *DDLTestSuite) TestAlterTableDropColumnsBigQuerySafety() {
 	}
 
 	// Because containsOtherOperations is false, it should have never tried to delete.
-	assert.Equal(d.T(), 0, d.fakeBigQueryStore.ExecCallCount())
+	assert.Equal(d.T(), 0, d.fakeBigQueryStore.ExecContextCallCount())
 
 	// Timestamp got increased, but containsOtherOperations is false, so it should not have tried to delete.
 	for _, column := range cols.GetColumns() {
 		assert.NoError(d.T(), shared.AlterTableDropColumns(d.T().Context(), d.bigQueryStore, tc, tableID, []columns.Column{column}, ts.Add(2*constants.DeletionConfidencePadding), false))
 	}
 
-	assert.Equal(d.T(), 0, d.fakeBigQueryStore.ExecCallCount())
+	assert.Equal(d.T(), 0, d.fakeBigQueryStore.ExecContextCallCount())
 }

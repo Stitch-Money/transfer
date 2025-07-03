@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	awsCfg "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/xitongsys/parquet-go-source/local"
 	"github.com/xitongsys/parquet-go/parquet"
 	"github.com/xitongsys/parquet-go/writer"
@@ -19,18 +21,15 @@ import (
 	"github.com/artie-labs/transfer/lib/parquetutil"
 	"github.com/artie-labs/transfer/lib/sql"
 	"github.com/artie-labs/transfer/lib/stringutil"
-	"github.com/artie-labs/transfer/lib/typing/ext"
 )
 
 type Store struct {
-	config config.Config
+	config   config.Config
+	s3Client awslib.S3Client
+	location *time.Location
 }
 
-func (s *Store) Validate() error {
-	if s == nil {
-		return fmt.Errorf("s3 store is nil")
-	}
-
+func (s Store) Validate() error {
 	if err := s.config.S3.Validate(); err != nil {
 		return fmt.Errorf("failed to validate settings: %w", err)
 	}
@@ -38,18 +37,18 @@ func (s *Store) Validate() error {
 	return nil
 }
 
-func (s *Store) IdentifierFor(topicConfig kafkalib.TopicConfig, table string) sql.TableIdentifier {
-	return NewTableIdentifier(topicConfig.Database, topicConfig.Schema, table)
+func (s *Store) IdentifierFor(topicConfig kafkalib.DatabaseAndSchemaPair, table string) sql.TableIdentifier {
+	return NewTableIdentifier(topicConfig.Database, topicConfig.Schema, table, s.config.S3.TableNameSeparator)
 }
 
 // ObjectPrefix - this will generate the exact right prefix that we need to write into S3.
 // It will look like something like this:
 // > folderName/fullyQualifiedTableName/YYYY-MM-DD
 func (s *Store) ObjectPrefix(tableData *optimization.TableData) string {
-	tableID := s.IdentifierFor(tableData.TopicConfig(), tableData.Name())
+	tableID := s.IdentifierFor(tableData.TopicConfig().BuildDatabaseAndSchemaPair(), tableData.Name())
 	fqTableName := tableID.FullyQualifiedName()
 	// Adding date= prefix so that it adheres to the partitioning format for Hive.
-	yyyyMMDDFormat := fmt.Sprintf("date=%s", time.Now().Format(ext.PostgresDateFormat))
+	yyyyMMDDFormat := fmt.Sprintf("date=%s", time.Now().Format(time.DateOnly))
 	if len(s.config.S3.FolderName) > 0 {
 		return strings.Join([]string{s.config.S3.FolderName, fqTableName, yyyyMMDDFormat}, "/")
 	}
@@ -70,6 +69,53 @@ func buildTemporaryFilePath(tableData *optimization.TableData) string {
 	return fmt.Sprintf("/tmp/%d_%s.parquet", tableData.LatestCDCTs.UnixMilli(), stringutil.Random(4))
 }
 
+// WriteParquetFiles writes the table data to a parquet file at the specified path.
+// Returns an error if any step of the writing process fails.
+func WriteParquetFiles(tableData *optimization.TableData, filePath string, location *time.Location) error {
+	cols := tableData.ReadOnlyInMemoryCols().ValidColumns()
+	schema, err := parquetutil.BuildCSVSchema(cols, location)
+	if err != nil {
+		return fmt.Errorf("failed to generate parquet schema: %w", err)
+	}
+
+	fw, err := local.NewLocalFileWriter(filePath)
+	if err != nil {
+		return fmt.Errorf("failed to create a local parquet file: %w", err)
+	}
+
+	pw, err := writer.NewCSVWriter(schema, fw, 4)
+	if err != nil {
+		return fmt.Errorf("failed to instantiate parquet writer: %w", err)
+	}
+
+	pw.CompressionType = parquet.CompressionCodec_GZIP
+	for _, val := range tableData.Rows() {
+		var row []any
+		for _, col := range cols {
+			value, err := parquetutil.ParseValue(val[col.Name()], col.KindDetails, location)
+			if err != nil {
+				return fmt.Errorf("failed to parse value, err: %w, value: %v, column: %q", err, val[col.Name()], col.Name())
+			}
+
+			row = append(row, value)
+		}
+
+		if err = pw.Write(row); err != nil {
+			return fmt.Errorf("failed to write row: %w", err)
+		}
+	}
+
+	if err = pw.WriteStop(); err != nil {
+		return fmt.Errorf("failed to write stop: %w", err)
+	}
+
+	if err = fw.Close(); err != nil {
+		return fmt.Errorf("failed to close filewriter: %w", err)
+	}
+
+	return nil
+}
+
 // Merge - will take tableData, write it into a particular file in the specified format, in these steps:
 // 1. Load a ParquetWriter from a JSON schema (auto-generated)
 // 2. Load the temporary file, under this format: s3://bucket/folderName/fullyQualifiedTableName/YYYY-MM-DD/{{unix_timestamp}}.parquet
@@ -80,46 +126,9 @@ func (s *Store) Merge(ctx context.Context, tableData *optimization.TableData) (b
 		return false, nil
 	}
 
-	cols := tableData.ReadOnlyInMemoryCols().ValidColumns()
-	schema, err := parquetutil.BuildCSVSchema(cols)
-	if err != nil {
-		return false, fmt.Errorf("failed to generate parquet schema: %w", err)
-	}
-
 	fp := buildTemporaryFilePath(tableData)
-	fw, err := local.NewLocalFileWriter(fp)
-	if err != nil {
-		return false, fmt.Errorf("failed to create a local parquet file: %w", err)
-	}
-
-	pw, err := writer.NewCSVWriter(schema, fw, 4)
-	if err != nil {
-		return false, fmt.Errorf("failed to instantiate parquet writer: %w", err)
-	}
-
-	pw.CompressionType = parquet.CompressionCodec_GZIP
-	for _, val := range tableData.Rows() {
-		var row []any
-		for _, col := range cols {
-			value, err := parquetutil.ParseValue(val[col.Name()], col.KindDetails)
-			if err != nil {
-				return false, fmt.Errorf("failed to parse value, err: %w, value: %v, column: %q", err, val[col.Name()], col.Name())
-			}
-
-			row = append(row, value)
-		}
-
-		if err = pw.Write(row); err != nil {
-			return false, fmt.Errorf("failed to write row: %w", err)
-		}
-	}
-
-	if err = pw.WriteStop(); err != nil {
-		return false, fmt.Errorf("failed to write stop: %w", err)
-	}
-
-	if err = fw.Close(); err != nil {
-		return false, fmt.Errorf("failed to close filewriter: %w", err)
+	if err := WriteParquetFiles(tableData, fp, s.location); err != nil {
+		return false, err
 	}
 
 	defer func() {
@@ -129,14 +138,7 @@ func (s *Store) Merge(ctx context.Context, tableData *optimization.TableData) (b
 		}
 	}()
 
-	if _, err = awslib.UploadLocalFileToS3(ctx, awslib.UploadArgs{
-		Bucket:                     s.config.S3.Bucket,
-		OptionalS3Prefix:           s.ObjectPrefix(tableData),
-		FilePath:                   fp,
-		OverrideAWSAccessKeyID:     s.config.S3.AwsAccessKeyID,
-		OverrideAWSAccessKeySecret: s.config.S3.AwsSecretAccessKey,
-		Region:                     s.config.S3.AwsRegion,
-	}); err != nil {
+	if _, err := s.s3Client.UploadLocalFileToS3(ctx, s.config.S3.Bucket, s.ObjectPrefix(tableData), fp); err != nil {
 		return false, fmt.Errorf("failed to upload file to s3: %w", err)
 	}
 
@@ -147,12 +149,39 @@ func (s *Store) IsRetryableError(_ error) bool {
 	return false // not supported for S3
 }
 
-func LoadStore(cfg config.Config) (*Store, error) {
-	store := &Store{config: cfg}
+func (s *Store) DropTable(ctx context.Context, tableID sql.TableIdentifier) error {
+	castedTableID, ok := tableID.(TableIdentifier)
+	if !ok {
+		return fmt.Errorf("expected tableID to be a TableIdentifier, got %T", tableID)
+	}
+
+	return s.s3Client.DeleteFolder(ctx, s.config.S3.Bucket, castedTableID.FullyQualifiedName())
+}
+
+func LoadStore(ctx context.Context, cfg config.Config) (*Store, error) {
+	creds := credentials.NewStaticCredentialsProvider(cfg.S3.AwsAccessKeyID, cfg.S3.AwsSecretAccessKey, "")
+	awsConfig, err := awsCfg.LoadDefaultConfig(ctx, awsCfg.WithCredentialsProvider(creds), awsCfg.WithRegion(cfg.S3.AwsRegion))
+	if err != nil {
+		return nil, fmt.Errorf("failed to load aws config: %w", err)
+	}
+
+	var location *time.Location
+	if cfg.SharedDestinationSettings.SharedTimestampSettings.Location != "" {
+		location, err = time.LoadLocation(cfg.SharedDestinationSettings.SharedTimestampSettings.Location)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load location: %w", err)
+		}
+	}
+
+	store := Store{
+		config:   cfg,
+		s3Client: awslib.NewS3Client(awsConfig),
+		location: location,
+	}
 
 	if err := store.Validate(); err != nil {
 		return nil, err
 	}
 
-	return store, nil
+	return &store, nil
 }

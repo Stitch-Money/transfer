@@ -33,8 +33,14 @@ type Kafka struct {
 }
 
 type SharedDestinationColumnSettings struct {
+	// TODO: Deprecate BigQueryNumericForVariableNumeric in favor of UseBigNumericForVariableNumeric
 	// BigQueryNumericForVariableNumeric - If enabled, we will use BigQuery's NUMERIC type for variable numeric types.
 	BigQueryNumericForVariableNumeric bool `yaml:"bigQueryNumericForVariableNumeric"`
+	UseBigNumericForVariableNumeric   bool `yaml:"useBigNumericForVariableNumeric"`
+}
+
+func (s SharedDestinationColumnSettings) BigNumericForVariableNumeric() bool {
+	return s.UseBigNumericForVariableNumeric || s.BigQueryNumericForVariableNumeric
 }
 
 type SharedDestinationSettings struct {
@@ -44,6 +50,18 @@ type SharedDestinationSettings struct {
 	// This is only supported by Redshift at the moment.
 	ExpandStringPrecision bool                            `yaml:"expandStringPrecision"`
 	ColumnSettings        SharedDestinationColumnSettings `yaml:"columnSettings"`
+	// TODO: Standardize on this method.
+	UseNewStringMethod bool `yaml:"useNewStringMethod"`
+
+	// Timestamp Settings
+	SharedTimestampSettings SharedTimestampSettings `yaml:"sharedTimestampSettings"`
+}
+
+type SharedTimestampSettings struct {
+	// If [location] is specified, we'll be using that location for all timestamp (without timezone) columns.
+	// The only exception is to Parquet where there's no explicit timestamp with timezone column, so both will use the location.
+	// Note: This only works for Parquet and Iceberg at the moment.
+	Location string `yaml:"location"`
 }
 
 type Reporting struct {

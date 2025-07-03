@@ -39,7 +39,7 @@ func (s Store) describeTable(ctx context.Context, tableID sql.TableIdentifier) (
 
 	cols := make([]columns.Column, len(returnedCols))
 	for i, returnedCol := range returnedCols {
-		kind, err := s.Dialect().KindForDataType(returnedCol.DataType, "notused")
+		kind, err := s.Dialect().KindForDataType(returnedCol.DataType)
 		if err != nil {
 			return nil, err
 		}
@@ -51,13 +51,7 @@ func (s Store) describeTable(ctx context.Context, tableID sql.TableIdentifier) (
 }
 
 func (s Store) CreateTable(ctx context.Context, tableID sql.TableIdentifier, tableConfig *types.DestinationTableConfig, cols []columns.Column) error {
-	var colParts []string
-	for _, col := range cols {
-		colPart := fmt.Sprintf("%s %s", col.Name(), s.Dialect().DataTypeForKind(col.KindDetails, col.PrimaryKey(), config.SharedDestinationColumnSettings{}))
-		colParts = append(colParts, colPart)
-	}
-
-	if err := s.apacheLivyClient.ExecContext(ctx, s.Dialect().BuildCreateTableQuery(tableID, false, colParts)); err != nil {
+	if err := s.apacheLivyClient.ExecContext(ctx, s.Dialect().BuildCreateTableQuery(tableID, false, s.buildColumnParts(cols))); err != nil {
 		return fmt.Errorf("failed to create table: %w", err)
 	}
 
@@ -105,7 +99,7 @@ func (s Store) AlterTableDropColumns(ctx context.Context, tableID sql.TableIdent
 	return nil
 }
 
-func (s Store) DeleteTable(ctx context.Context, tableID sql.TableIdentifier) error {
+func (s Store) DropTable(ctx context.Context, tableID sql.TableIdentifier) error {
 	castedTableID, ok := tableID.(dialect.TableIdentifier)
 	if !ok {
 		return fmt.Errorf("failed to cast table ID to dialect.TableIdentifier")
@@ -113,6 +107,15 @@ func (s Store) DeleteTable(ctx context.Context, tableID sql.TableIdentifier) err
 
 	if err := s.s3TablesAPI.DeleteTable(ctx, castedTableID.Namespace(), castedTableID.Table()); err != nil {
 		return fmt.Errorf("failed to delete table: %w", err)
+	}
+
+	return nil
+}
+
+func (s Store) TruncateTable(ctx context.Context, tableID sql.TableIdentifier) error {
+	query := fmt.Sprintf("TRUNCATE TABLE %s", tableID.FullyQualifiedName())
+	if err := s.apacheLivyClient.ExecContext(ctx, query); err != nil {
+		return fmt.Errorf("failed to truncate table: %w", err)
 	}
 
 	return nil

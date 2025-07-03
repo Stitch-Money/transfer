@@ -27,6 +27,7 @@ clean:
 .PHONY: generate
 generate:
 	cd lib/mocks && go tool counterfeiter -generate
+
 .PHONY: build
 build:
 	goreleaser build --clean
@@ -34,6 +35,11 @@ build:
 .PHONY: release
 release:
 	goreleaser release --clean
+
+.PHONY: outdated
+outdated:
+# Note this will not output major version changes of dependencies.
+	go list -u -m -f '{{if and .Update (not .Indirect)}}{{.}}{{end}}' all
 
 .PHONY: bench_size
 bench_size:
@@ -53,8 +59,46 @@ bench_redshift:
 bench_mongo:
 	go test ./lib/cdc/mongo -bench=Bench -benchtime=20s
 
+.PHONY: dest-itest-append
+dest-itest-append:
+	go run integration_tests/destination_append/main.go --config .personal/integration_tests/snowflake.yaml
+	go run integration_tests/destination_append/main.go --config .personal/integration_tests/bigquery.yaml
+	go run integration_tests/destination_append/main.go --config .personal/integration_tests/databricks.yaml
+	go run integration_tests/destination_append/main.go --config .personal/integration_tests/redshift.yaml
+	go run integration_tests/destination_append/main.go --config .personal/integration_tests/mssql.yaml
+	go run integration_tests/destination_append/main.go --config .personal/integration_tests/iceberg.yaml
 
-.PHONY snowflake-itest:
-snowflake-itest:
-	# This expects a config file in .personal/integration_tests/snowflake.yaml
-	go run integration_tests/snowflake/main.go --config .personal/integration_tests/snowflake.yaml
+.PHONY: dest-itest-merge
+dest-itest-merge:
+	go run integration_tests/destination_merge/main.go --config .personal/integration_tests/snowflake.yaml
+	go run integration_tests/destination_merge/main.go --config .personal/integration_tests/bigquery.yaml
+	go run integration_tests/destination_merge/main.go --config .personal/integration_tests/databricks.yaml
+	go run integration_tests/destination_merge/main.go --config .personal/integration_tests/redshift.yaml
+	go run integration_tests/destination_merge/main.go --config .personal/integration_tests/mssql.yaml
+
+.PHONY: parquet-venv
+parquet-venv:
+	@echo "Setting up Python venv for parquet integration test..."
+	@if [ ! -d integration_tests/parquet/venv ]; then \
+		python3 -m venv integration_tests/parquet/venv; \
+	fi
+	@integration_tests/parquet/venv/bin/pip install --upgrade pip > /dev/null
+	@integration_tests/parquet/venv/bin/pip install -r integration_tests/parquet/requirements.txt > /dev/null
+
+.PHONY: test-parquet
+test-parquet: parquet-venv
+	@echo "Running parquet integration test (Go) with location America/New_York"
+	@cd integration_tests/parquet && go run main.go --location=America/New_York
+	@echo "Running parquet verification (Python)..."
+	@cd integration_tests/parquet && venv/bin/python verify_parquet.py --file-path output/test.parquet --location America/New_York
+	
+	@echo "Running parquet integration test (Go) with no location set"
+	@cd integration_tests/parquet && go run main.go
+	@echo "Running parquet verification (Python)..."
+	@cd integration_tests/parquet && venv/bin/python verify_parquet.py --file-path output/test.parquet
+
+.PHONY: dest-itest-types
+dest-itest-types:
+	go run integration_tests/destination_types/main.go --config .personal/integration_tests/redshift.yaml
+	go run integration_tests/destination_types/main.go --config .personal/integration_tests/mssql.yaml
+	go run integration_tests/destination_types/main.go --config .personal/integration_tests/snowflake.yaml

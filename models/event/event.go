@@ -50,11 +50,60 @@ func transformData(data map[string]any, tc kafkalib.TopicConfig) map[string]any 
 		delete(data, col)
 	}
 
+	// If column inclusion is specified, then we need to include only the specified columns
+	if len(tc.ColumnsToInclude) > 0 {
+		filteredData := make(map[string]any)
+		for _, col := range tc.ColumnsToInclude {
+			if value, ok := data[col]; ok {
+				filteredData[col] = value
+			}
+		}
+
+		// Include Artie columns
+		for _, col := range constants.ArtieColumns {
+			if value, ok := data[col]; ok {
+				filteredData[col] = value
+			}
+		}
+
+		return filteredData
+	}
+
 	return data
 }
 
-func ToMemoryEvent(event cdc.Event, pkMap map[string]any, tc kafkalib.TopicConfig, cfgMode config.Mode) (Event, error) {
+func buildFilteredColumns(event cdc.Event, tc kafkalib.TopicConfig) (*columns.Columns, error) {
 	cols, err := event.GetColumns()
+	if err != nil {
+		return nil, err
+	}
+
+	for _, col := range tc.ColumnsToExclude {
+		cols.DeleteColumn(col)
+	}
+
+	if len(tc.ColumnsToInclude) > 0 {
+		var filteredColumns columns.Columns
+		for _, col := range tc.ColumnsToInclude {
+			if existingColumn, ok := cols.GetColumn(col); ok {
+				filteredColumns.AddColumn(existingColumn)
+			}
+		}
+
+		for _, col := range constants.ArtieColumns {
+			if existingColumn, ok := cols.GetColumn(col); ok {
+				filteredColumns.AddColumn(existingColumn)
+			}
+		}
+
+		return &filteredColumns, nil
+	}
+
+	return cols, nil
+}
+
+func ToMemoryEvent(event cdc.Event, pkMap map[string]any, tc kafkalib.TopicConfig, cfgMode config.Mode) (Event, error) {
+	cols, err := buildFilteredColumns(event, tc)
 	if err != nil {
 		return Event{}, err
 	}
@@ -88,6 +137,25 @@ func ToMemoryEvent(event cdc.Event, pkMap map[string]any, tc kafkalib.TopicConfi
 	if err != nil {
 		return Event{}, err
 	}
+
+	if tc.IncludeArtieOperation {
+		evtData[constants.OperationColumnMarker] = event.Operation()
+	}
+
+	if tc.IncludeSourceMetadata {
+		metadata, err := event.GetSourceMetadata()
+		if err != nil {
+			return Event{}, fmt.Errorf("failed to get source metadata: %w", err)
+		}
+
+		evtData[constants.SourceMetadataColumnMarker] = metadata
+		cols.AddColumn(columns.NewColumn(constants.SourceMetadataColumnMarker, typing.Struct))
+	}
+
+	if tc.IncludeFullSourceTableName {
+		evtData[constants.FullSourceTableNameColumnMarker] = event.GetFullTableName()
+	}
+
 	tblName := cmp.Or(tc.TableName, event.GetTableName())
 	if cfgMode == config.History {
 		if !strings.HasSuffix(tblName, constants.HistoryModeSuffix) {
@@ -96,6 +164,7 @@ func ToMemoryEvent(event cdc.Event, pkMap map[string]any, tc kafkalib.TopicConfi
 			slog.Warn(fmt.Sprintf("History mode is enabled, but table name does not have a %s suffix, so we're adding it...", constants.HistoryModeSuffix), slog.String("tblName", tblName))
 		}
 
+		// If this is already set, it's a no-op.
 		evtData[constants.OperationColumnMarker] = event.Operation()
 
 		// We don't need the deletion markers either.

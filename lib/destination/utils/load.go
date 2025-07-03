@@ -24,7 +24,7 @@ func IsOutputBaseline(cfg config.Config) bool {
 func LoadBaseline(ctx context.Context, cfg config.Config) (destination.Baseline, error) {
 	switch cfg.Output {
 	case constants.S3:
-		store, err := s3.LoadStore(cfg)
+		store, err := s3.LoadStore(ctx, cfg)
 		if err != nil {
 			return nil, fmt.Errorf("failed to load S3: %w", err)
 		}
@@ -44,7 +44,7 @@ func LoadBaseline(ctx context.Context, cfg config.Config) (destination.Baseline,
 func LoadDestination(ctx context.Context, cfg config.Config, store *db.Store) (destination.Destination, error) {
 	switch cfg.Output {
 	case constants.Snowflake:
-		return snowflake.LoadSnowflake(cfg, store)
+		return snowflake.LoadSnowflake(ctx, cfg, store)
 	case constants.BigQuery:
 		return bigquery.LoadBigQuery(ctx, cfg, store)
 	case constants.Databricks:

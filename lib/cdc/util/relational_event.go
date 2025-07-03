@@ -1,6 +1,7 @@
 package util
 
 import (
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -30,10 +31,25 @@ type Source struct {
 	Database  string `json:"db"`
 	Schema    string `json:"schema,omitempty"`
 	Table     string `json:"table"`
+
 	// MySQL specific
 	File string  `json:"file,omitempty"`
 	Pos  int64   `json:"pos,omitempty"`
 	Gtid *string `json:"gtid,omitempty"`
+	// MSSQL specific
+	LSN           any    `json:"lsn,omitempty"`
+	TransactionID *int64 `json:"transaction_id,omitempty"`
+}
+
+func shouldParseValue(value any) bool {
+	if str, ok := value.(string); ok {
+		// We can't parse this because this is a formula, not a value.
+		if str == "CURRENT_TIMESTAMP" {
+			return false
+		}
+	}
+
+	return true
 }
 
 func (s *SchemaEventPayload) GetColumns() (*columns.Columns, error) {
@@ -48,12 +64,14 @@ func (s *SchemaEventPayload) GetColumns() (*columns.Columns, error) {
 		// We are purposefully doing this to ensure that the correct typing is set
 		// When we invoke event.Save()
 		col := columns.NewColumn(columns.EscapeName(field.FieldName), typing.Invalid)
-		val, parseErr := field.ParseValue(field.Default)
-		if parseErr != nil {
-			return nil, fmt.Errorf("failed to parse field %q for default value: %w", field.FieldName, parseErr)
-		} else {
-			if field.ShouldSetDefaultValue(val) {
-				col.SetDefaultValue(val)
+		if shouldParseValue(field.Default) {
+			val, err := field.ParseValue(field.Default)
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse field %q for default value: %w", field.FieldName, err)
+			} else {
+				if field.ShouldSetDefaultValue(val) {
+					col.SetDefaultValue(val)
+				}
 			}
 		}
 
@@ -77,6 +95,23 @@ func (s *SchemaEventPayload) GetExecutionTime() time.Time {
 
 func (s *SchemaEventPayload) GetTableName() string {
 	return s.Payload.Source.Table
+}
+
+func (s *SchemaEventPayload) GetFullTableName() string {
+	if s.Payload.Source.Schema != "" {
+		return s.Payload.Source.Schema + "." + s.Payload.Source.Table
+	}
+
+	return s.Payload.Source.Table
+}
+
+func (s *SchemaEventPayload) GetSourceMetadata() (string, error) {
+	json, err := json.Marshal(s.Payload.Source)
+	if err != nil {
+		return "", err
+	}
+
+	return string(json), nil
 }
 
 func (s *SchemaEventPayload) GetData(tc kafkalib.TopicConfig) (map[string]any, error) {

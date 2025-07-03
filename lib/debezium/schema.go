@@ -43,6 +43,7 @@ const (
 	String  FieldType = "string"
 	Bytes   FieldType = "bytes"
 	Boolean FieldType = "boolean"
+	Int8    FieldType = "int8"
 	Int16   FieldType = "int16"
 	Int32   FieldType = "int32"
 	Int64   FieldType = "int64"
@@ -53,12 +54,6 @@ const (
 	Map     FieldType = "map"
 )
 
-type Item struct {
-	Type         FieldType             `json:"type"`
-	Optional     bool                  `json:"optional"`
-	DebeziumType SupportedDebeziumType `json:"name"`
-}
-
 type Field struct {
 	Type         FieldType             `json:"type"`
 	Optional     bool                  `json:"optional"`
@@ -67,7 +62,7 @@ type Field struct {
 	DebeziumType SupportedDebeziumType `json:"name"`
 	Parameters   map[string]any        `json:"parameters"`
 	// [ItemsMetadata] is only populated if the literal type is an array.
-	ItemsMetadata *Item `json:"items,omitempty"`
+	ItemsMetadata *Field `json:"items,omitempty"`
 }
 
 func (f Field) GetScaleAndPrecision() (int32, *int32, error) {
@@ -146,12 +141,11 @@ func (f Field) ToValueConverter() (converters.ValueConverter, error) {
 
 		switch f.Type {
 		case Array:
-			var json bool
-			if f.ItemsMetadata != nil {
-				json = f.ItemsMetadata.DebeziumType == JSON
+			if f.ItemsMetadata == nil {
+				// TODO: Remove this condition once Reader fully supports setting items metadata
+				return converters.NewArray(nil), nil
 			}
-
-			return converters.NewArray(json), nil
+			return converters.NewArray(f.ItemsMetadata.ParseValue), nil
 		case Double, Float:
 			return converters.Float64{}, nil
 		}
@@ -174,7 +168,7 @@ func (f Field) ToKindDetails() (typing.KindDetails, error) {
 	switch f.Type {
 	case Map:
 		return typing.Struct, nil
-	case Int16, Int32, Int64:
+	case Int8, Int16, Int32, Int64:
 		return typing.Integer, nil
 	case String, Bytes:
 		return typing.String, nil

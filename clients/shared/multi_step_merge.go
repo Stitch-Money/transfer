@@ -31,21 +31,16 @@ func MultiStepMerge(ctx context.Context, dest destination.Destination, tableData
 		return false, nil
 	}
 
-	msmTableID := dest.IdentifierFor(tableData.TopicConfig(), fmt.Sprintf("%s_%s_msm", constants.ArtiePrefix, tableData.Name()))
-	targetTableID := dest.IdentifierFor(tableData.TopicConfig(), tableData.Name())
+	msmTableID := dest.IdentifierFor(tableData.TopicConfig().BuildDatabaseAndSchemaPair(), fmt.Sprintf("%s_%s_msm", constants.ArtiePrefix, tableData.Name()))
+	targetTableID := dest.IdentifierFor(tableData.TopicConfig().BuildDatabaseAndSchemaPair(), tableData.Name())
 	targetTableConfig, err := dest.GetTableConfig(targetTableID, tableData.TopicConfig().DropDeletedColumns)
 	if err != nil {
 		return false, fmt.Errorf("failed to get table config: %w", err)
 	}
 
 	if msmSettings.IsFirstFlush() {
-		sflkMSMTableID, ok := msmTableID.(dialect.TableIdentifier)
-		if !ok {
-			return false, fmt.Errorf("failed to get snowflake table identifier")
-		}
-
 		// If it's the first time we are doing this, we should ensure the MSM table has been dropped.
-		if err := dest.DropTable(ctx, sflkMSMTableID.WithDisableDropProtection(true)); err != nil {
+		if err := dest.DropTable(ctx, msmTableID.WithDisableDropProtection(true)); err != nil {
 			return false, fmt.Errorf("failed to drop msm table: %w", err)
 		}
 
@@ -82,10 +77,7 @@ func MultiStepMerge(ctx context.Context, dest destination.Destination, tableData
 		_, targetKeysMissing := columns.DiffAndFilter(
 			tableData.ReadOnlyInMemoryCols().GetColumns(),
 			targetTableConfig.GetColumns(),
-			tableData.TopicConfig().SoftDelete,
-			tableData.TopicConfig().IncludeArtieUpdatedAt,
-			tableData.TopicConfig().IncludeDatabaseUpdatedAt,
-			tableData.Mode(),
+			tableData.BuildColumnsToKeep(),
 		)
 
 		if targetTableConfig.CreateTable() {
@@ -135,15 +127,10 @@ func MultiStepMerge(ctx context.Context, dest destination.Destination, tableData
 
 func merge(ctx context.Context, dwh destination.Destination, tableData *optimization.TableData, tableConfig *types.DestinationTableConfig, temporaryTableID sql.TableIdentifier, targetTableID sql.TableIdentifier, opts types.MergeOpts) error {
 	defer func() {
-		if dropErr := ddl.DropTemporaryTable(dwh, temporaryTableID, false); dropErr != nil {
+		if dropErr := ddl.DropTemporaryTable(ctx, dwh, temporaryTableID, false); dropErr != nil {
 			slog.Warn("Failed to drop temporary table", slog.Any("err", dropErr), slog.String("tableName", temporaryTableID.FullyQualifiedName()))
 		}
 	}()
-
-	snowflakeDialect, ok := dwh.Dialect().(dialect.SnowflakeDialect)
-	if !ok {
-		return fmt.Errorf("multi-step merge is only supported on Snowflake")
-	}
 
 	if opts.PrepareTemporaryTable {
 		if err := dwh.PrepareTemporaryTable(ctx, tableData, tableConfig, temporaryTableID, targetTableID, types.AdditionalSettings{ColumnSettings: opts.ColumnSettings}, true); err != nil {
@@ -154,7 +141,7 @@ func merge(ctx context.Context, dwh destination.Destination, tableData *optimiza
 	// TODO: Support column backfill
 	subQuery := temporaryTableID.FullyQualifiedName()
 	if opts.SubQueryDedupe {
-		subQuery = snowflakeDialect.BuildDedupeTableQuery(temporaryTableID, tableData.PrimaryKeys())
+		subQuery = dwh.Dialect().BuildDedupeTableQuery(temporaryTableID, tableData.PrimaryKeys())
 	}
 
 	if subQuery == "" {
@@ -188,7 +175,7 @@ func merge(ctx context.Context, dwh destination.Destination, tableData *optimiza
 
 	var mergeStatements []string
 	if opts.UseBuildMergeQueryIntoStagingTable {
-		mergeStatements = snowflakeDialect.BuildMergeQueryIntoStagingTable(
+		mergeStatements = dwh.Dialect().BuildMergeQueryIntoStagingTable(
 			targetTableID,
 			subQuery,
 			primaryKeys,
@@ -196,7 +183,7 @@ func merge(ctx context.Context, dwh destination.Destination, tableData *optimiza
 			validColumns,
 		)
 	} else {
-		_mergeStatements, err := snowflakeDialect.BuildMergeQueries(
+		_mergeStatements, err := dwh.Dialect().BuildMergeQueries(
 			targetTableID,
 			subQuery,
 			primaryKeys,
@@ -212,7 +199,7 @@ func merge(ctx context.Context, dwh destination.Destination, tableData *optimiza
 		mergeStatements = _mergeStatements
 	}
 
-	if err := destination.ExecStatements(dwh, mergeStatements); err != nil {
+	if err := destination.ExecContextStatements(ctx, dwh, mergeStatements); err != nil {
 		return fmt.Errorf("failed to execute merge statements: %w", err)
 	}
 

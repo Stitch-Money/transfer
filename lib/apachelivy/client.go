@@ -2,31 +2,55 @@ package apachelivy
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/artie-labs/transfer/lib/jitter"
+	"github.com/artie-labs/transfer/lib/retry"
 )
 
 const (
-	sleepBaseMs = 1_000
-	sleepMaxMs  = 3_000
+	sleepBaseMs                     = 1_000
+	sleepMaxMs                      = 3_000
+	defaultHeartbeatTimeoutInSecond = 300
+	maxSessionRetries               = 5
 )
 
 type Client struct {
-	url         string
-	sessionID   int
-	httpClient  *http.Client
-	sessionConf map[string]any
-	sessionJars []string
+	mu                              sync.Mutex
+	url                             string
+	sessionID                       int
+	httpClient                      *http.Client
+	sessionConf                     map[string]any
+	sessionJars                     []string
+	sessionHeartbeatTimeoutInSecond int
+	sessionDriverMemory             string
+	sessionExecutorMemory           string
+
+	lastChecked time.Time
 }
 
-func (c Client) QueryContext(ctx context.Context, query string) (GetStatementResponse, error) {
+func (c *Client) buildRetryConfig() (retry.RetryConfig, error) {
+	cfg, err := retry.NewJitterRetryConfig(sleepBaseMs, sleepMaxMs, maxSessionRetries, shouldRetry)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create retry config: %w", err)
+	}
+
+	return cfg, nil
+}
+
+func (c *Client) queryContext(ctx context.Context, query string, attempt int) (GetStatementResponse, error) {
+	if err := c.ensureSession(ctx, attempt > 0); err != nil {
+		return GetStatementResponse{}, err
+	}
+
 	statementID, err := c.submitLivyStatement(ctx, query)
 	if err != nil {
 		return GetStatementResponse{}, err
@@ -40,7 +64,22 @@ func (c Client) QueryContext(ctx context.Context, query string) (GetStatementRes
 	return response, nil
 }
 
-func (c Client) ExecContext(ctx context.Context, query string) error {
+func (c *Client) QueryContext(ctx context.Context, query string) (GetStatementResponse, error) {
+	retryCfg, err := c.buildRetryConfig()
+	if err != nil {
+		return GetStatementResponse{}, err
+	}
+
+	return retry.WithRetriesAndResult(retryCfg, func(attempt int, _ error) (GetStatementResponse, error) {
+		return c.queryContext(ctx, query, attempt)
+	})
+}
+
+func (c *Client) execContext(ctx context.Context, query string, attempt int) error {
+	if err := c.ensureSession(ctx, attempt > 0); err != nil {
+		return err
+	}
+
 	statementID, err := c.submitLivyStatement(ctx, query)
 	if err != nil {
 		return err
@@ -54,16 +93,27 @@ func (c Client) ExecContext(ctx context.Context, query string) error {
 	return resp.Error(c.sessionID)
 }
 
-func (c Client) waitForStatement(ctx context.Context, statementID int) (GetStatementResponse, error) {
+func (c *Client) ExecContext(ctx context.Context, query string) error {
+	retryCfg, err := c.buildRetryConfig()
+	if err != nil {
+		return err
+	}
+
+	return retry.WithRetries(retryCfg, func(attempt int, _ error) error {
+		return c.execContext(ctx, query, attempt)
+	})
+}
+
+func (c *Client) waitForStatement(ctx context.Context, statementID int) (GetStatementResponse, error) {
 	var count int
 	for {
-		respBytes, err := c.doRequest(ctx, "GET", fmt.Sprintf("/sessions/%d/statements/%d", c.sessionID, statementID), nil)
+		out, err := c.doRequest(ctx, "GET", fmt.Sprintf("/sessions/%d/statements/%d", c.sessionID, statementID), nil)
 		if err != nil {
 			return GetStatementResponse{}, err
 		}
 
 		var resp GetStatementResponse
-		if err := json.Unmarshal(respBytes, &resp); err != nil {
+		if err := json.Unmarshal(out.body, &resp); err != nil {
 			return GetStatementResponse{}, err
 		}
 
@@ -84,116 +134,65 @@ func (c Client) waitForStatement(ctx context.Context, statementID int) (GetState
 	}
 }
 
-func (c Client) submitLivyStatement(ctx context.Context, code string) (int, error) {
+func (c *Client) submitLivyStatement(ctx context.Context, code string) (int, error) {
 	reqBody, err := json.Marshal(CreateStatementRequest{Code: code, Kind: "sql"})
 	if err != nil {
 		return 0, err
 	}
 
-	respBytes, err := c.doRequest(ctx, "POST", fmt.Sprintf("/sessions/%d/statements", c.sessionID), reqBody)
+	out, err := c.doRequest(ctx, "POST", fmt.Sprintf("/sessions/%d/statements", c.sessionID), reqBody)
 	if err != nil {
 		return 0, err
 	}
 
 	var resp CreateStatementResponse
-	if err := json.Unmarshal(respBytes, &resp); err != nil {
+	if err := json.Unmarshal(out.body, &resp); err != nil {
 		return 0, err
 	}
 
 	return resp.ID, nil
 }
 
-func (c Client) doRequest(ctx context.Context, method, path string, body []byte) ([]byte, error) {
+type doRequestResponse struct {
+	body       []byte
+	httpStatus int
+}
+
+func (c *Client) doRequest(ctx context.Context, method, path string, body []byte) (doRequestResponse, error) {
 	req, err := http.NewRequestWithContext(ctx, method, c.url+path, bytes.NewBuffer(body))
 	if err != nil {
-		return nil, err
+		return doRequestResponse{}, err
 	}
 
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, err
+		return doRequestResponse{}, err
 	}
 
 	defer resp.Body.Close()
 	out, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, err
+		return doRequestResponse{}, err
 	}
 
 	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
-		return out, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+		return doRequestResponse{body: out, httpStatus: resp.StatusCode}, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 	}
 
-	return out, nil
+	return doRequestResponse{body: out, httpStatus: resp.StatusCode}, nil
 }
 
-func (c *Client) newSession(ctx context.Context, kind SessionKind, blockUntilReady bool) error {
-	body, err := json.Marshal(CreateSessionRequest{Kind: string(kind), Jars: c.sessionJars, Conf: c.sessionConf})
-	if err != nil {
-		return err
+func NewClient(ctx context.Context, url string, config map[string]any, jars []string, heartbeatTimeoutInSecond int, driverMemory, executorMemory string) (*Client, error) {
+	client := &Client{
+		url:                             url,
+		httpClient:                      &http.Client{},
+		sessionConf:                     config,
+		sessionJars:                     jars,
+		sessionHeartbeatTimeoutInSecond: cmp.Or(heartbeatTimeoutInSecond, defaultHeartbeatTimeoutInSecond),
+		sessionDriverMemory:             driverMemory,
+		sessionExecutorMemory:           executorMemory,
 	}
 
-	resp, err := c.doRequest(ctx, "POST", "/sessions", body)
-	if err != nil {
-		slog.Warn("Failed to create session", slog.Any("err", err), slog.String("response", string(resp)))
-		return err
-	}
-
-	var createResp CreateSessionResponse
-	if err = json.Unmarshal(resp, &createResp); err != nil {
-		return err
-	}
-
-	c.sessionID = createResp.ID
-	if blockUntilReady && !createResp.State.IsReady() {
-		if err := c.waitForSessionToBeReady(ctx); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-func (c Client) waitForSessionToBeReady(ctx context.Context) error {
-	var count int
-	for {
-		respBytes, err := c.doRequest(ctx, "GET", fmt.Sprintf("/sessions/%d", c.sessionID), nil)
-		if err != nil {
-			return err
-		}
-
-		var resp GetSessionResponse
-		if err := json.Unmarshal(respBytes, &resp); err != nil {
-			return err
-		}
-
-		switch resp.State {
-		case StateIdle:
-			return nil
-		case StateNotStarted, StateStarting:
-			sleepTime := jitter.Jitter(sleepBaseMs, sleepMaxMs, count)
-			slog.Info("Session is not ready yet, sleeping", slog.Int("sessionID", c.sessionID), slog.Int("count", count), slog.Duration("sleepTime", sleepTime))
-			time.Sleep(sleepTime)
-		default:
-			return fmt.Errorf("session in unexpected state: %q", resp.State)
-		}
-
-		count++
-	}
-}
-
-func NewClient(ctx context.Context, url string, config map[string]any) (Client, error) {
-	client := Client{
-		url:         url,
-		httpClient:  &http.Client{},
-		sessionConf: config,
-	}
-
-	if err := client.newSession(ctx, SessionKindSql, true); err != nil {
-		return Client{}, err
-	}
-
-	slog.Info("Session has been created in Apache Livy", slog.Any("sessionID", client.sessionID))
 	return client, nil
 }

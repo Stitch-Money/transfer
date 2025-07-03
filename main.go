@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/signal"
 	"strconv"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/artie-labs/transfer/lib/config"
@@ -61,7 +63,10 @@ func main() {
 		slog.Int("flushPoolSizeKb", settings.Config.FlushSizeKb),
 	)
 
-	ctx := context.Background()
+	parentctx := context.Background()
+	ctx, stop := signal.NotifyContext(parentctx, syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
 	metricsClient := metrics.LoadExporter(settings.Config)
 	var dest destination.Baseline
 	if utils.IsOutputBaseline(settings.Config) {
