@@ -35,13 +35,20 @@ type Connection struct {
 }
 
 func NewConnection(enableAWSMSKIAM bool, disableTLS bool, username, password string, timeout time.Duration) Connection {
-
 	return Connection{
 		enableAWSMSKIAM: enableAWSMSKIAM,
 		disableTLS:      disableTLS,
 		username:        username,
 		password:        password,
 		timeout:         cmp.Or(timeout, DefaultTimeout),
+	}
+}
+
+func NewSaslPlainConnection(username string, password string) Connection {
+	return Connection{
+		username:      username,
+		password:      password,
+		saslMechanism: string(Plain),
 	}
 }
 

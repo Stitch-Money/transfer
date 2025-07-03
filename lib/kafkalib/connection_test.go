@@ -37,6 +37,13 @@ func TestConnecton_SaslPlainMechanism(t *testing.T) {
 	}
 }
 
+func TestConnecton_SaslPlainMechanism(t *testing.T) {
+	{
+		c := NewSaslPlainConnection("username", "password")
+		assert.Equal(t, SaslPlain, c.Mechanism())
+	}
+}
+
 func TestConnection_Dialer(t *testing.T) {
 	ctx := t.Context()
 	{

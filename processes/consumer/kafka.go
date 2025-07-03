@@ -108,7 +108,6 @@ func ProcessArtieMessage(ctx context.Context, cfg config.Config, inMemDB *models
 }
 
 func StartConsumer(ctx context.Context, cfg config.Config, inMemDB *models.DatabaseData, dest destination.Baseline, metricsClient base.Client) {
-
 	var kafkaConn kafkalib.Connection
 
 	if cfg.Kafka.SaslMechanism == "PLAIN" {
