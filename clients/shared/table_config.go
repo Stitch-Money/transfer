@@ -1,6 +1,7 @@
 package shared
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -30,7 +31,7 @@ type GetTableCfgArgs struct {
 	DropDeletedColumns   bool
 }
 
-func (g GetTableCfgArgs) GetTableConfig() (*types.DestinationTableConfig, error) {
+func (g GetTableCfgArgs) GetTableConfig(ctx context.Context) (*types.DestinationTableConfig, error) {
 	if tableConfig := g.ConfigMap.GetTableConfig(g.TableID); tableConfig != nil {
 		return tableConfig, nil
 	}
@@ -40,7 +41,7 @@ func (g GetTableCfgArgs) GetTableConfig() (*types.DestinationTableConfig, error)
 		return nil, fmt.Errorf("failed to generate describe table query: %w", err)
 	}
 
-	rows, err := g.Destination.Query(query, args...)
+	rows, err := g.Destination.QueryContext(ctx, query, args...)
 	defer func() {
 		if rows != nil {
 			err = rows.Close()
@@ -84,8 +85,8 @@ func (g GetTableCfgArgs) GetTableConfig() (*types.DestinationTableConfig, error)
 
 		row := make(map[string]string)
 		for idx, val := range values {
-			interfaceVal, isOk := val.(*interface{})
-			if !isOk || interfaceVal == nil {
+			interfaceVal, ok := val.(*interface{})
+			if !ok || interfaceVal == nil {
 				return nil, errors.New("invalid value")
 			}
 
@@ -111,7 +112,7 @@ func (g GetTableCfgArgs) GetTableConfig() (*types.DestinationTableConfig, error)
 }
 
 func (g GetTableCfgArgs) buildColumnFromRow(row map[string]string) (columns.Column, error) {
-	kindDetails, err := g.Destination.Dialect().KindForDataType(row[g.ColumnNameForDataType], row[constants.StrPrecisionCol])
+	kindDetails, err := g.Destination.Dialect().KindForDataType(row[g.ColumnNameForDataType])
 	if err != nil {
 		return columns.Column{}, fmt.Errorf("failed to get kind details: %w", err)
 	}
@@ -125,7 +126,7 @@ func (g GetTableCfgArgs) buildColumnFromRow(row map[string]string) (columns.Colu
 	switch strategy {
 	case sql.Backfill:
 		// We need to check to make sure the comment is not an empty string
-		if comment, isOk := row[g.ColumnNameForComment]; isOk && comment != "" {
+		if comment, ok := row[g.ColumnNameForComment]; ok && comment != "" {
 			var _colComment constants.ColComment
 			if err = json.Unmarshal([]byte(comment), &_colComment); err != nil {
 				// This may happen if the company is using column comments.
@@ -139,9 +140,11 @@ func (g GetTableCfgArgs) buildColumnFromRow(row map[string]string) (columns.Colu
 			}
 		}
 	case sql.Native:
-		if value, isOk := row["default_value"]; isOk && value != "" {
+		if value, ok := row["default_value"]; ok && value != "" {
 			col.SetBackfilled(true)
 		}
+	case sql.NotImplemented:
+		// We don't need to do anything here.
 	default:
 		return columns.Column{}, fmt.Errorf("unknown default value strategy: %q", strategy)
 	}

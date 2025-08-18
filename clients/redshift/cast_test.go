@@ -3,6 +3,7 @@ package redshift
 import (
 	"fmt"
 
+	"github.com/artie-labs/transfer/lib/config"
 	"github.com/artie-labs/transfer/lib/config/constants"
 	"github.com/artie-labs/transfer/lib/stringutil"
 	"github.com/artie-labs/transfer/lib/typing"
@@ -37,6 +38,7 @@ func (r *RedshiftTestSuite) TestReplaceExceededValues() {
 					// TruncateExceededValue = false
 					result := replaceExceededValues(stringutil.Random(int(maxStringLength)+1), typing.String, false, false)
 					assert.Equal(r.T(), constants.ExceededValueMarker, result.Value)
+					assert.True(r.T(), result.Exceeded)
 					assert.Zero(r.T(), result.NewLength)
 				}
 				{
@@ -48,6 +50,7 @@ func (r *RedshiftTestSuite) TestReplaceExceededValues() {
 
 					result := replaceExceededValues("hello", stringKd, false, false)
 					assert.Equal(r.T(), constants.ExceededValueMarker, result.Value)
+					assert.True(r.T(), result.Exceeded)
 					assert.Zero(r.T(), result.NewLength)
 				}
 				{
@@ -56,6 +59,7 @@ func (r *RedshiftTestSuite) TestReplaceExceededValues() {
 					result := replaceExceededValues(superLongString, typing.String, true, false)
 					assert.Equal(r.T(), superLongString[:maxStringLength], result.Value)
 					assert.Zero(r.T(), result.NewLength)
+					assert.True(r.T(), result.Exceeded)
 				}
 				{
 					// TruncateExceededValue = true, string precision specified
@@ -67,6 +71,7 @@ func (r *RedshiftTestSuite) TestReplaceExceededValues() {
 					result := replaceExceededValues("hello", stringKd, true, false)
 					assert.Equal(r.T(), "hel", result.Value)
 					assert.Zero(r.T(), result.NewLength)
+					assert.True(r.T(), result.Exceeded)
 				}
 			}
 			{
@@ -76,18 +81,21 @@ func (r *RedshiftTestSuite) TestReplaceExceededValues() {
 					result := replaceExceededValues(fmt.Sprintf(`{"foo": "%s"}`, stringutil.Random(int(maxSuperLength)+1)), typing.Struct, false, false)
 					assert.Equal(r.T(), fmt.Sprintf(`{"key":"%s"}`, constants.ExceededValueMarker), result.Value)
 					assert.Zero(r.T(), result.NewLength)
+					assert.True(r.T(), result.Exceeded)
 				}
 				{
 					// Masked (data type is an array)
 					result := replaceExceededValues(fmt.Sprintf(`["%s"]`, stringutil.Random(int(maxSuperLength)+1)), typing.Struct, false, false)
 					assert.Equal(r.T(), fmt.Sprintf(`{"key":"%s"}`, constants.ExceededValueMarker), result.Value)
 					assert.Zero(r.T(), result.NewLength)
+					assert.True(r.T(), result.Exceeded)
 				}
 				{
 					// Masked (data type is a string)
-					result := replaceExceededValues(stringutil.Random(int(maxStringLength)+1), typing.String, false, false)
-					assert.Equal(r.T(), constants.ExceededValueMarker, result.Value)
+					result := replaceExceededValues(stringutil.Random(int(maxStringLength)+1), typing.Struct, false, false)
+					assert.Equal(r.T(), fmt.Sprintf(`"%s"`, constants.ExceededValueMarker), result.Value)
 					assert.Zero(r.T(), result.NewLength)
+					assert.True(r.T(), result.Exceeded)
 				}
 			}
 		}
@@ -116,6 +124,7 @@ func (r *RedshiftTestSuite) TestReplaceExceededValues() {
 						result := replaceExceededValues(value, typing.Struct, false, false)
 						assert.Equal(r.T(), value, result.Value)
 						assert.Zero(r.T(), result.NewLength)
+						assert.False(r.T(), result.Exceeded)
 					}
 					{
 						// Value is an array
@@ -123,12 +132,14 @@ func (r *RedshiftTestSuite) TestReplaceExceededValues() {
 						result := replaceExceededValues(value, typing.Struct, false, false)
 						assert.Equal(r.T(), value, result.Value)
 						assert.Zero(r.T(), result.NewLength)
+						assert.False(r.T(), result.Exceeded)
 					}
 					{
 						// Value is a string
 						result := replaceExceededValues("hello world", typing.Struct, false, false)
 						assert.Equal(r.T(), "hello world", result.Value)
 						assert.Zero(r.T(), result.NewLength)
+						assert.False(r.T(), result.Exceeded)
 					}
 				}
 			}
@@ -184,17 +195,19 @@ func (r *RedshiftTestSuite) TestReplaceExceededValues() {
 }
 
 func (r *RedshiftTestSuite) TestCastColValStaging() {
+	settings := config.SharedDestinationSettings{}
 	{
 		// nil
 		{
 			// Struct
-			result, err := castColValStaging(nil, typing.Struct, false, false)
+
+			result, err := castColValStaging(nil, typing.Struct, settings)
 			assert.NoError(r.T(), err)
 			assert.Empty(r.T(), result.Value)
 		}
 		{
 			// Not struct
-			result, err := castColValStaging(nil, typing.String, false, false)
+			result, err := castColValStaging(nil, typing.String, settings)
 			assert.NoError(r.T(), err)
 			assert.Equal(r.T(), constants.NullValuePlaceholder, result.Value)
 		}

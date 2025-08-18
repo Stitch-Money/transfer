@@ -2,16 +2,18 @@ package snowflake
 
 import (
 	"context"
-	"encoding/csv"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strings"
+	"strconv"
 
 	"github.com/artie-labs/transfer/clients/shared"
+	"github.com/artie-labs/transfer/clients/snowflake/dialect"
+	"github.com/artie-labs/transfer/lib/config"
 	"github.com/artie-labs/transfer/lib/config/constants"
 	"github.com/artie-labs/transfer/lib/destination/types"
+	"github.com/artie-labs/transfer/lib/maputil"
 	"github.com/artie-labs/transfer/lib/optimization"
 	"github.com/artie-labs/transfer/lib/sql"
 	"github.com/artie-labs/transfer/lib/typing"
@@ -36,17 +38,21 @@ func replaceExceededValues(colVal string, kindDetails typing.KindDetails) string
 	return colVal
 }
 
-func castColValStaging(colVal any, colKind typing.KindDetails) (string, error) {
+func castColValStaging(colVal any, colKind typing.KindDetails, _ config.SharedDestinationSettings) (shared.ValueConvertResponse, error) {
 	if colVal == nil {
-		return constants.NullValuePlaceholder, nil
+		return shared.ValueConvertResponse{Value: constants.NullValuePlaceholder}, nil
 	}
 
 	value, err := values.ToString(colVal, colKind)
 	if err != nil {
-		return "", err
+		return shared.ValueConvertResponse{}, err
 	}
 
-	return replaceExceededValues(value, colKind), nil
+	return shared.ValueConvertResponse{Value: replaceExceededValues(value, colKind)}, nil
+}
+
+func (s Store) useExternalStage() bool {
+	return s.config.Snowflake.ExternalStage != nil && s.config.Snowflake.ExternalStage.Enabled
 }
 
 func (s *Store) PrepareTemporaryTable(ctx context.Context, tableData *optimization.TableData, dwh *types.DestinationTableConfig, tempTableID sql.TableIdentifier, _ sql.TableIdentifier, additionalSettings types.AdditionalSettings, createTempTable bool) error {
@@ -57,7 +63,8 @@ func (s *Store) PrepareTemporaryTable(ctx context.Context, tableData *optimizati
 	}
 
 	// Write data into CSV
-	file, err := s.writeTemporaryTableFile(tableData, tempTableID)
+	tempTableDataFile := shared.NewTemporaryDataFile(tempTableID)
+	file, _, err := tempTableDataFile.WriteTemporaryTableFile(tableData, castColValStaging, s.config.SharedDestinationSettings)
 	if err != nil {
 		return fmt.Errorf("failed to load temporary table: %w", err)
 	}
@@ -69,23 +76,55 @@ func (s *Store) PrepareTemporaryTable(ctx context.Context, tableData *optimizati
 		}
 	}()
 
-	// Upload the CSV file to Snowflake, wrapping the file in single quotes to avoid special characters.
-	tableStageName := addPrefixToTableName(tempTableID, "%")
-	if _, err = s.ExecContext(ctx, fmt.Sprintf("PUT 'file://%s' @%s AUTO_COMPRESS=TRUE", file.FilePath, tableStageName)); err != nil {
-		return fmt.Errorf("failed to run PUT for temporary table: %w", err)
+	if s.useExternalStage() {
+		s3Client, err := s.GetS3Client()
+		if err != nil {
+			return fmt.Errorf("failed to get S3 client: %w", err)
+		}
+
+		_, err = s3Client.UploadLocalFileToS3(
+			ctx,
+			s.config.Snowflake.ExternalStage.Bucket,
+			s.config.Snowflake.ExternalStage.Prefix,
+			file.FilePath,
+		)
+
+		if err != nil {
+			return fmt.Errorf("failed to upload file to S3: %w", err)
+		}
+	} else {
+		// Upload the CSV file to Snowflake internal stage
+		tableStageName := addPrefixToTableName(tempTableID, "%")
+		putQuery := fmt.Sprintf("PUT 'file://%s' @%s", file.FilePath, tableStageName)
+		if _, err = s.ExecContext(ctx, putQuery); err != nil {
+			return fmt.Errorf("failed to run PUT for temporary table: %w", err)
+		}
 	}
 
-	// We are appending gz to the file name since it was compressed by the PUT command.
-	copyCommand := s.dialect().BuildCopyIntoTableQuery(tempTableID, tableData.ReadOnlyInMemoryCols().ValidColumns(), tableStageName, fmt.Sprintf("%s.gz", file.FileName))
+	tableStageName := addPrefixToTableName(tempTableID, "%")
+	if s.useExternalStage() {
+		castedTableID, ok := tempTableID.(dialect.TableIdentifier)
+		if !ok {
+			return fmt.Errorf("failed to cast table identifier: %w", err)
+		}
+
+		// Fix the S3 path by ensuring there's a slash between the stage name and the file name
+		tableStageName = fmt.Sprintf("%s.%s.%s/", castedTableID.Database(), castedTableID.Schema(), filepath.Join(s.config.Snowflake.ExternalStage.Name, s.config.Snowflake.ExternalStage.Prefix))
+	}
+
+	copyCommand := s.dialect().BuildCopyIntoTableQuery(tempTableID, tableData.ReadOnlyInMemoryCols().ValidColumns(), tableStageName, file.FileName)
 	if additionalSettings.AdditionalCopyClause != "" {
 		copyCommand += " " + additionalSettings.AdditionalCopyClause
 	}
 
-	if _, err = s.ExecContext(ctx, copyCommand); err != nil {
+	// COPY INTO does not implement [RowsAffected]. Instead, we'll treat this as a query and then parse the output:
+	// https://docs.snowflake.com/en/sql-reference/sql/copy-into-table#output
+	sqlRows, err := s.QueryContext(ctx, copyCommand)
+	if err != nil {
 		// For non-temp tables, we should try to delete the staging file if COPY INTO fails.
 		// This is because [PURGE = TRUE] will only delete the staging files upon a successful COPY INTO.
 		// We also only need to do this for non-temp tables because these staging files will linger, since we create a new temporary table per attempt.
-		if !createTempTable {
+		if !createTempTable && !s.useExternalStage() {
 			if _, deleteErr := s.ExecContext(ctx, s.dialect().BuildRemoveFilesFromStage(addPrefixToTableName(tempTableID, "%"), "")); deleteErr != nil {
 				slog.Warn("Failed to remove all files from stage", slog.Any("deleteErr", deleteErr))
 			}
@@ -94,43 +133,30 @@ func (s *Store) PrepareTemporaryTable(ctx context.Context, tableData *optimizati
 		return fmt.Errorf("failed to run copy into temporary table: %w", err)
 	}
 
-	return nil
-}
-
-type File struct {
-	FilePath string
-	FileName string
-}
-
-func (s *Store) writeTemporaryTableFile(tableData *optimization.TableData, newTableID sql.TableIdentifier) (File, error) {
-	fileName := fmt.Sprintf("%s.csv", strings.ReplaceAll(newTableID.FullyQualifiedName(), `"`, ""))
-	fp := filepath.Join(os.TempDir(), fileName)
-	file, err := os.Create(fp)
+	rows, err := sql.RowsToObjects(sqlRows)
 	if err != nil {
-		return File{}, err
+		return fmt.Errorf("failed to convert rows to objects: %w", err)
 	}
 
-	defer file.Close()
-	writer := csv.NewWriter(file)
-	writer.Comma = '\t'
-
-	columns := tableData.ReadOnlyInMemoryCols().ValidColumns()
-	for _, row := range tableData.Rows() {
-		var csvRow []string
-		for _, col := range columns {
-			castedValue, castErr := castColValStaging(row[col.Name()], col.KindDetails)
-			if castErr != nil {
-				return File{}, fmt.Errorf("failed to cast value '%v': %w", row[col.Name()], castErr)
-			}
-
-			csvRow = append(csvRow, castedValue)
+	var rowsLoaded int64
+	for _, row := range rows {
+		rowsLoadedStr, err := maputil.GetTypeFromMap[string](row, "rows_loaded")
+		if err != nil {
+			return fmt.Errorf("failed to get rows loaded: %w", err)
 		}
 
-		if err = writer.Write(csvRow); err != nil {
-			return File{}, fmt.Errorf("failed to write to csv: %w", err)
+		_rowsLoaded, err := strconv.ParseInt(rowsLoadedStr, 10, 64)
+		if err != nil {
+			return fmt.Errorf("failed to parse rows loaded: %w", err)
 		}
+
+		rowsLoaded += _rowsLoaded
 	}
 
-	writer.Flush()
-	return File{FilePath: fp, FileName: fileName}, writer.Error()
+	expectedRows := int64(len(tableData.Rows()))
+	if rowsLoaded != expectedRows {
+		return fmt.Errorf("expected %d rows to be inserted, but got %d", expectedRows, rowsLoaded)
+	}
+
+	return nil
 }

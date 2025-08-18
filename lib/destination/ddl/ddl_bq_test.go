@@ -40,7 +40,7 @@ func (d *DDLTestSuite) TestAlterTableDropColumnsBigQuery() {
 		cols.AddColumn(columns.NewColumn(colName, kindDetails))
 	}
 
-	tableID := d.bigQueryStore.IdentifierFor(td.TopicConfig(), td.Name())
+	tableID := d.bigQueryStore.IdentifierFor(td.TopicConfig().BuildDatabaseAndSchemaPair(), td.Name())
 	fqName := tableID.FullyQualifiedName()
 	originalColumnLength := len(cols.GetColumns())
 	d.bigQueryStore.GetConfigMap().AddTable(tableID, types.NewDestinationTableConfig(cols.GetColumns(), true))
@@ -107,9 +107,11 @@ func (d *DDLTestSuite) TestAlterTableAddColumns() {
 		col := columns.NewColumn(name, kind)
 		assert.NoError(d.T(), shared.AlterTableAddColumns(d.T().Context(), d.bigQueryStore, tc, config.SharedDestinationColumnSettings{}, tableID, []columns.Column{col}))
 
+		dataType, err := d.bigQueryStore.Dialect().DataTypeForKind(kind, false, config.SharedDestinationColumnSettings{})
+		assert.NoError(d.T(), err)
+
 		_, query, _ := d.fakeBigQueryStore.ExecContextArgsForCall(callIdx)
-		assert.Equal(d.T(), fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", fqName, d.bigQueryStore.Dialect().QuoteIdentifier(col.Name()),
-			d.bigQueryStore.Dialect().DataTypeForKind(kind, false, config.SharedDestinationColumnSettings{})), query)
+		assert.Equal(d.T(), fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", fqName, d.bigQueryStore.Dialect().QuoteIdentifier(col.Name()), dataType), query)
 		callIdx += 1
 	}
 
@@ -117,13 +119,13 @@ func (d *DDLTestSuite) TestAlterTableAddColumns() {
 	assert.Equal(d.T(), newColsLen+existingColsLen, len(d.bigQueryStore.GetConfigMap().GetTableConfig(tableID).GetColumns()))
 	// Check by iterating over the columns
 	for _, column := range d.bigQueryStore.GetConfigMap().GetTableConfig(tableID).GetColumns() {
-		existingCol, isOk := existingCols.GetColumn(column.Name())
-		if !isOk {
+		existingCol, ok := existingCols.GetColumn(column.Name())
+		if !ok {
 			// Check new cols?
-			existingCol.KindDetails, isOk = newCols[column.Name()]
+			existingCol.KindDetails, ok = newCols[column.Name()]
 		}
 
-		assert.True(d.T(), isOk)
+		assert.True(d.T(), ok)
 		assert.Equal(d.T(), existingCol.KindDetails, column.KindDetails, existingCol)
 	}
 }
@@ -155,10 +157,12 @@ func (d *DDLTestSuite) TestAlterTableAddColumnsSomeAlreadyExist() {
 		// BQ returning the same error because the column already exists.
 		d.fakeBigQueryStore.ExecContextReturnsOnCall(0, sqlResult, errors.New("Column already exists: _string at [1:39]"))
 
+		dataType, err := d.bigQueryStore.Dialect().DataTypeForKind(column.KindDetails, false, config.SharedDestinationColumnSettings{})
+		assert.NoError(d.T(), err)
+
 		assert.NoError(d.T(), shared.AlterTableAddColumns(d.T().Context(), d.bigQueryStore, tc, config.SharedDestinationColumnSettings{}, tableID, []columns.Column{column}))
 		_, query, _ := d.fakeBigQueryStore.ExecContextArgsForCall(callIdx)
-		assert.Equal(d.T(), fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", fqName, d.bigQueryStore.Dialect().QuoteIdentifier(column.Name()),
-			d.bigQueryStore.Dialect().DataTypeForKind(column.KindDetails, false, config.SharedDestinationColumnSettings{})), query)
+		assert.Equal(d.T(), fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", fqName, d.bigQueryStore.Dialect().QuoteIdentifier(column.Name()), dataType), query)
 		callIdx += 1
 	}
 
@@ -166,8 +170,8 @@ func (d *DDLTestSuite) TestAlterTableAddColumnsSomeAlreadyExist() {
 	assert.Len(d.T(), d.bigQueryStore.GetConfigMap().GetTableConfig(tableID).GetColumns(), existingColsLen)
 	// Check by iterating over the columns
 	for _, column := range d.bigQueryStore.GetConfigMap().GetTableConfig(tableID).GetColumns() {
-		existingCol, isOk := existingCols.GetColumn(column.Name())
-		assert.True(d.T(), isOk)
+		existingCol, ok := existingCols.GetColumn(column.Name())
+		assert.True(d.T(), ok)
 		assert.Equal(d.T(), column.KindDetails, existingCol.KindDetails)
 	}
 }
@@ -190,7 +194,7 @@ func (d *DDLTestSuite) TestAlterTableDropColumnsBigQuerySafety() {
 		cols.AddColumn(columns.NewColumn(colName, kindDetails))
 	}
 
-	tableID := d.bigQueryStore.IdentifierFor(td.TopicConfig(), td.Name())
+	tableID := d.bigQueryStore.IdentifierFor(td.TopicConfig().BuildDatabaseAndSchemaPair(), td.Name())
 	d.bigQueryStore.GetConfigMap().AddTable(tableID, types.NewDestinationTableConfig(cols.GetColumns(), false))
 	tc := d.bigQueryStore.GetConfigMap().GetTableConfig(tableID)
 
@@ -201,12 +205,12 @@ func (d *DDLTestSuite) TestAlterTableDropColumnsBigQuerySafety() {
 	}
 
 	// Because containsOtherOperations is false, it should have never tried to delete.
-	assert.Equal(d.T(), 0, d.fakeBigQueryStore.ExecCallCount())
+	assert.Equal(d.T(), 0, d.fakeBigQueryStore.ExecContextCallCount())
 
 	// Timestamp got increased, but containsOtherOperations is false, so it should not have tried to delete.
 	for _, column := range cols.GetColumns() {
 		assert.NoError(d.T(), shared.AlterTableDropColumns(d.T().Context(), d.bigQueryStore, tc, tableID, []columns.Column{column}, ts.Add(2*constants.DeletionConfidencePadding), false))
 	}
 
-	assert.Equal(d.T(), 0, d.fakeBigQueryStore.ExecCallCount())
+	assert.Equal(d.T(), 0, d.fakeBigQueryStore.ExecContextCallCount())
 }

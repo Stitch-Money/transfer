@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/artie-labs/transfer/lib/artie"
+	"github.com/artie-labs/transfer/lib/cdc"
 	"github.com/artie-labs/transfer/lib/cdc/mongo"
 	"github.com/artie-labs/transfer/lib/config"
 	"github.com/artie-labs/transfer/lib/config/constants"
@@ -15,6 +16,13 @@ import (
 	"github.com/artie-labs/transfer/models"
 	"github.com/segmentio/kafka-go"
 	"github.com/stretchr/testify/assert"
+)
+
+var (
+	db      = "lemonade"
+	schema  = "public"
+	table   = "orders"
+	tableID = cdc.NewTableID(schema, table)
 )
 
 func TestProcessMessageFailures(t *testing.T) {
@@ -36,7 +44,7 @@ func TestProcessMessageFailures(t *testing.T) {
 		Time:          time.Time{},
 	}
 
-	msg := artie.NewMessage(&kafkaMsg, kafkaMsg.Topic)
+	msg := artie.NewMessage(kafkaMsg)
 	args := processArgs{
 		Msg:     msg,
 		GroupID: "foo",
@@ -53,12 +61,6 @@ func TestProcessMessageFailures(t *testing.T) {
 	assert.Empty(t, tableName)
 
 	var mgo mongo.Debezium
-	const (
-		db     = "lemonade"
-		schema = "public"
-		table  = "orders"
-	)
-
 	tcFmtMap := NewTcFmtMap()
 	tcFmtMap.Add(msg.Topic(), TopicConfigFormatter{
 		tc: kafkalib.TopicConfig{
@@ -78,8 +80,8 @@ func TestProcessMessageFailures(t *testing.T) {
 		TopicToConfigFormatMap: tcFmtMap,
 	}
 
-	tcFmt, isOk := tcFmtMap.GetTopicFmt(msg.Topic())
-	assert.True(t, isOk)
+	tcFmt, ok := tcFmtMap.GetTopicFmt(msg.Topic())
+	assert.True(t, ok)
 
 	tableName, err = args.process(ctx, cfg, memDB, &mocks.FakeBaseline{}, metrics.NullMetricsProvider{})
 	assert.ErrorContains(t, err, fmt.Sprintf("format: %s is not supported", tcFmt.tc.CDCKeyFormat), err.Error())
@@ -157,38 +159,42 @@ func TestProcessMessageFailures(t *testing.T) {
 	}
 }`
 
+	kafkaMessage := msg.GetMessage()
 	memoryDB := memDB
-	msg.KafkaMsg.Key = []byte(fmt.Sprintf("Struct{id=%v}", 1004))
-	msg.KafkaMsg.Value = []byte(val)
+	kafkaMessage.Key = []byte(fmt.Sprintf("Struct{id=%v}", 1004))
+	kafkaMessage.Value = []byte(val)
+
 	args = processArgs{
-		Msg:                    msg,
+		Msg:                    artie.NewMessage(kafkaMessage),
 		GroupID:                "foo",
 		TopicToConfigFormatMap: tcFmtMap,
 	}
 
-	tableName, err = args.process(ctx, cfg, memDB, &mocks.FakeBaseline{}, metrics.NullMetricsProvider{})
+	actualTableID, err := args.process(ctx, cfg, memDB, &mocks.FakeBaseline{}, metrics.NullMetricsProvider{})
 	assert.NoError(t, err)
-	assert.Equal(t, table, tableName)
+	assert.Equal(t, tableID, actualTableID)
 
-	td := memoryDB.GetOrCreateTableData(table)
+	td := memoryDB.GetOrCreateTableData(tableID, msg.Topic())
 	// Check that there are corresponding row(s) in the memory DB
 	assert.Len(t, td.Rows(), 1)
 
 	var rowData map[string]any
 	for _, row := range td.Rows() {
-		if row["_id"] == "1004" {
-			rowData = row
+		if id, ok := row.GetValue("_id"); ok {
+			if id == "1004" {
+				rowData = row.GetData()
+			}
 		}
 	}
 	{
-		rowValue, isOk := rowData[constants.DeleteColumnMarker]
-		assert.True(t, isOk)
+		rowValue, ok := rowData[constants.DeleteColumnMarker]
+		assert.True(t, ok)
 		assert.False(t, rowValue.(bool))
 	}
 	{
-		msg.KafkaMsg.Value = []byte("not a json object")
+		kafkaMessage.Value = []byte("not a json object")
 		args = processArgs{
-			Msg:                    msg,
+			Msg:                    artie.NewMessage(kafkaMessage),
 			GroupID:                "foo",
 			TopicToConfigFormatMap: tcFmtMap,
 		}
@@ -219,7 +225,7 @@ func TestProcessMessageSkip(t *testing.T) {
 		Time:          time.Time{},
 	}
 
-	msg := artie.NewMessage(&kafkaMsg, kafkaMsg.Topic)
+	msg := artie.NewMessage(kafkaMsg)
 
 	var mgo mongo.Debezium
 	const (
@@ -318,23 +324,25 @@ func TestProcessMessageSkip(t *testing.T) {
 	memoryDB := memDB
 	for _, val := range vals {
 		idx += 1
-		msg.KafkaMsg.Key = []byte(fmt.Sprintf("Struct{id=%v}", idx))
+
+		kafkaMessage := msg.GetMessage()
+		kafkaMessage.Key = []byte(fmt.Sprintf("Struct{id=%v}", idx))
 		if val != "" {
-			msg.KafkaMsg.Value = []byte(val)
+			kafkaMessage.Value = []byte(val)
 		}
 
 		args := processArgs{
-			Msg:                    msg,
+			Msg:                    artie.NewMessage(kafkaMessage),
 			GroupID:                "foo",
 			TopicToConfigFormatMap: tcFmtMap,
 		}
 
-		td := memoryDB.GetOrCreateTableData(table)
+		td := memoryDB.GetOrCreateTableData(tableID, msg.Topic())
 		assert.Equal(t, 0, int(td.NumberOfRows()))
 
-		tableName, err := args.process(ctx, cfg, memDB, &mocks.FakeBaseline{}, metrics.NullMetricsProvider{})
+		actualTableID, err := args.process(ctx, cfg, memDB, &mocks.FakeBaseline{}, metrics.NullMetricsProvider{})
 		assert.NoError(t, err)
-		assert.Equal(t, table, tableName)
+		assert.Equal(t, tableID, actualTableID)
 		// Because it got skipped.
 		assert.Equal(t, 0, int(td.NumberOfRows()))
 	}

@@ -3,8 +3,11 @@ package apachelivy
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 )
+
+const ErrTooManySessionsCreated = "Rejected, too many sessions are being created!"
 
 // SessionKind - https://livy.incubator.apache.org/docs/latest/rest-api.html#session-kind
 type SessionKind string
@@ -31,20 +34,41 @@ const (
 	StateError        SessionState = "error"
 )
 
+var TerminalSessionStates = []SessionState{
+	StateError,
+	StateKilled,
+	StateShuttingDown,
+	StateDead,
+}
+
 func (s SessionState) IsReady() bool {
 	return s == StateIdle
+}
+
+type ListSessonResponse struct {
+	Sessions []GetSessionResponse `json:"sessions"`
 }
 
 type GetSessionResponse struct {
 	ID    int          `json:"id"`
 	State SessionState `json:"state"`
 	Kind  string       `json:"kind"`
+	Name  string       `json:"name"`
+	Logs  []string     `json:"log"` // limited by Livy to last 10 lines
+}
+
+func (g GetSessionResponse) TerminalState() bool {
+	return slices.Contains(TerminalSessionStates, g.State)
 }
 
 type CreateSessionRequest struct {
-	Kind string         `json:"kind"`
-	Jars []string       `json:"jars,omitempty"`
-	Conf map[string]any `json:"conf"`
+	Kind                     string         `json:"kind"`
+	Jars                     []string       `json:"jars,omitempty"`
+	Conf                     map[string]any `json:"conf"`
+	HeartbeatTimeoutInSecond int            `json:"heartbeatTimeoutInSecond,omitempty"`
+	DriverMemory             string         `json:"driverMemory,omitempty"`
+	ExecutorMemory           string         `json:"executorMemory,omitempty"`
+	Name                     string         `json:"name,omitempty"`
 }
 
 type CreateSessionResponse struct {
@@ -122,7 +146,7 @@ func (g GetStatementResponse) MarshalJSON() ([]byte, error) {
 
 type GetSchemaResponse struct {
 	Schema GetSchemaStructResponse `json:"schema"`
-	Data   [][]string              `json:"data"`
+	Data   [][]any                 `json:"data"`
 }
 
 type GetSchemaStructResponse struct {
@@ -134,4 +158,8 @@ type GetSchemaFieldResponse struct {
 	Type     string         `json:"type"`
 	Nullable bool           `json:"nullable"`
 	Metadata map[string]any `json:"metadata"`
+}
+
+type ErrorResponse struct {
+	Message string `json:"msg"`
 }

@@ -3,6 +3,7 @@ package config
 import (
 	"cmp"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"strings"
 
@@ -18,6 +19,15 @@ func (b *BigQuery) DSN() string {
 
 	if b.Location != "" {
 		dsn = fmt.Sprintf("bigquery://%s/%s/%s", b.ProjectID, b.Location, b.DefaultDataset)
+	}
+
+	return dsn
+}
+
+func (p Postgres) DSN() string {
+	dsn := fmt.Sprintf("postgres://%s:%s@%s:%d/%s", p.Username, p.Password, p.Host, p.Port, p.Database)
+	if p.DisableSSL {
+		dsn = fmt.Sprintf("%s?sslmode=disable", dsn)
 	}
 
 	return dsn
@@ -42,6 +52,7 @@ func (s Snowflake) ToConfig() (*gosnowflake.Config, error) {
 		Account:     s.AccountID,
 		User:        s.Username,
 		Warehouse:   s.Warehouse,
+		Role:        s.Role,
 		Region:      s.Region,
 		Application: s.Application,
 		Params: map[string]*string{
@@ -52,6 +63,11 @@ func (s Snowflake) ToConfig() (*gosnowflake.Config, error) {
 			// https://docs.snowflake.com/en/user-guide/session-policies#considerations
 			"CLIENT_SESSION_KEEP_ALIVE": typing.ToPtr("true"),
 		},
+	}
+
+	for key, value := range s.AdditionalParameters {
+		cfg.Params[key] = &value
+		slog.Info("Setting additional parameters for Snowflake", slog.String("key", key), slog.String("value", value))
 	}
 
 	if s.PathToPrivateKey != "" {

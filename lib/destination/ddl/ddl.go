@@ -1,6 +1,7 @@
 package ddl
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -35,7 +36,12 @@ func BuildCreateTableSQL(settings config.SharedDestinationColumnSettings, dialec
 			primaryKeys = append(primaryKeys, colName)
 		}
 
-		parts = append(parts, fmt.Sprintf("%s %s", colName, dialect.DataTypeForKind(col.KindDetails, col.PrimaryKey(), settings)))
+		dataType, err := dialect.DataTypeForKind(col.KindDetails, col.PrimaryKey(), settings)
+		if err != nil {
+			return "", fmt.Errorf("failed to get data type for column %q: %w", col.Name(), err)
+		}
+
+		parts = append(parts, fmt.Sprintf("%s %s", colName, dataType))
 	}
 
 	if len(primaryKeys) > 0 {
@@ -53,10 +59,10 @@ func BuildCreateTableSQL(settings config.SharedDestinationColumnSettings, dialec
 // DropTemporaryTable - this will drop the temporary table from Snowflake w/ stages and BigQuery
 // It has a safety check to make sure the tableName contains the `constants.ArtiePrefix` key.
 // Temporary tables look like this: database.schema.tableName__artie__RANDOM_STRING(5)_expiryUnixTs
-func DropTemporaryTable(dest destination.Destination, tableIdentifier sql.TableIdentifier, shouldReturnError bool) error {
+func DropTemporaryTable(ctx context.Context, dest destination.Destination, tableIdentifier sql.TableIdentifier, shouldReturnError bool) error {
 	if strings.Contains(strings.ToLower(tableIdentifier.Table()), constants.ArtiePrefix) {
 		sqlCommand := fmt.Sprintf("DROP TABLE IF EXISTS %s", tableIdentifier.FullyQualifiedName())
-		if _, err := dest.Exec(sqlCommand); err != nil {
+		if _, err := dest.ExecContext(ctx, sqlCommand); err != nil {
 			slog.Warn("Failed to drop temporary table, it will get garbage collected by the TTL...",
 				slog.Any("err", err),
 				slog.String("sqlCommand", sqlCommand),
@@ -79,7 +85,12 @@ func BuildAlterTableAddColumns(settings config.SharedDestinationColumnSettings, 
 			return nil, fmt.Errorf("received an invalid column %q", col.Name())
 		}
 
-		sqlPart := fmt.Sprintf("%s %s", dialect.QuoteIdentifier(col.Name()), dialect.DataTypeForKind(col.KindDetails, col.PrimaryKey(), settings))
+		dataType, err := dialect.DataTypeForKind(col.KindDetails, col.PrimaryKey(), settings)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get data type for column %q: %w", col.Name(), err)
+		}
+
+		sqlPart := fmt.Sprintf("%s %s", dialect.QuoteIdentifier(col.Name()), dataType)
 		parts = append(parts, dialect.BuildAddColumnQuery(tableID, sqlPart))
 	}
 

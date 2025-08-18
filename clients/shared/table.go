@@ -11,6 +11,7 @@ import (
 	"github.com/artie-labs/transfer/lib/destination"
 	"github.com/artie-labs/transfer/lib/destination/ddl"
 	"github.com/artie-labs/transfer/lib/destination/types"
+	"github.com/artie-labs/transfer/lib/jitter"
 	"github.com/artie-labs/transfer/lib/optimization"
 	"github.com/artie-labs/transfer/lib/sql"
 	"github.com/artie-labs/transfer/lib/typing/columns"
@@ -50,7 +51,38 @@ func CreateTable(ctx context.Context, dest destination.Destination, mode config.
 	}
 
 	// Update cache with the new columns that we've added.
-	tc.MutateInMemoryColumns(constants.Add, cols...)
+	tc.MutateInMemoryColumns(constants.AddColumn, cols...)
+	return nil
+}
+
+func addColumn(ctx context.Context, dest destination.Destination, sqlPart string, attempts int) error {
+	if attempts >= 100 {
+		return fmt.Errorf("failed to add column after 100 attempts")
+	}
+
+	slog.Info("[DDL] Executing query", slog.String("query", sqlPart))
+	if _, err := dest.ExecContext(ctx, sqlPart); err != nil {
+		if dest.Dialect().IsColumnAlreadyExistsErr(err) {
+			return nil
+		}
+
+		if dest.IsRetryableError(err) {
+			sleepDuration := jitter.Jitter(1500, jitter.DefaultMaxMs, attempts)
+			slog.Warn("Failed to add column, retrying...", slog.Any("err", err), slog.Duration("sleep", sleepDuration))
+
+			// Respect context cancellation while waiting to retry.
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(sleepDuration):
+			}
+
+			return addColumn(ctx, dest, sqlPart, attempts+1)
+		}
+
+		return fmt.Errorf("failed to alter table: %w", err)
+	}
+
 	return nil
 }
 
@@ -66,15 +98,12 @@ func AlterTableAddColumns(ctx context.Context, dest destination.Destination, tc 
 	}
 
 	for _, sqlPart := range sqlParts {
-		slog.Info("[DDL] Executing query", slog.String("query", sqlPart))
-		if _, err = dest.ExecContext(ctx, sqlPart); err != nil {
-			if !dest.Dialect().IsColumnAlreadyExistsErr(err) {
-				return fmt.Errorf("failed to alter table: %w", err)
-			}
+		if err := addColumn(ctx, dest, sqlPart, 0); err != nil {
+			return fmt.Errorf("failed to add column: %w", err)
 		}
 	}
 
-	tc.MutateInMemoryColumns(constants.Add, cols...)
+	tc.MutateInMemoryColumns(constants.AddColumn, cols...)
 	return nil
 }
 
@@ -106,6 +135,6 @@ func AlterTableDropColumns(ctx context.Context, dest destination.Destination, tc
 		}
 	}
 
-	tc.MutateInMemoryColumns(constants.Delete, colsToDrop...)
+	tc.MutateInMemoryColumns(constants.DropColumn, colsToDrop...)
 	return nil
 }

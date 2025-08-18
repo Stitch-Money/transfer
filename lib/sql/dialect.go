@@ -14,6 +14,7 @@ const (
 	Backfill DefaultValueStrategy = iota
 	// Native - set default values directly into the destination
 	Native
+	NotImplemented
 )
 
 type TableIdentifier interface {
@@ -21,13 +22,16 @@ type TableIdentifier interface {
 	Table() string
 	WithTable(table string) TableIdentifier
 	FullyQualifiedName() string
+	WithDisableDropProtection(disableDropProtection bool) TableIdentifier
+	AllowToDrop() bool
 }
 
 type Dialect interface {
 	QuoteIdentifier(identifier string) string
 	EscapeStruct(value string) string
-	DataTypeForKind(kd typing.KindDetails, isPk bool, settings config.SharedDestinationColumnSettings) string
-	KindForDataType(_type string, stringPrecision string) (typing.KindDetails, error)
+	DataTypeForKind(kd typing.KindDetails, isPk bool, settings config.SharedDestinationColumnSettings) (string, error)
+	KindForDataType(_type string) (typing.KindDetails, error)
+	// [IsColumnAlreadyExistsErr] - This is only needed if the SQL Dialect does not supporting adding column if not exists.
 	IsColumnAlreadyExistsErr(err error) bool
 	IsTableDoesNotExistErr(err error) bool
 	BuildCreateTableQuery(tableID TableIdentifier, temporary bool, colSQLParts []string) string
@@ -37,6 +41,7 @@ type Dialect interface {
 	BuildDedupeTableQuery(tableID TableIdentifier, primaryKeys []string) string
 	BuildDescribeTableQuery(tableID TableIdentifier) (string, []any, error)
 	BuildIsNotToastValueExpression(tableAlias constants.TableAlias, column columns.Column) string
+	BuildMergeQueryIntoStagingTable(tableID TableIdentifier, subQuery string, primaryKeys []columns.Column, additionalEqualityStrings []string, cols []columns.Column) []string
 	BuildMergeQueries(
 		tableID TableIdentifier,
 		subQuery string,

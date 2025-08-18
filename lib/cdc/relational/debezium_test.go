@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/artie-labs/transfer/lib/config/constants"
+	"github.com/artie-labs/transfer/lib/typing/converters"
 
 	"github.com/artie-labs/transfer/lib/kafkalib"
 	"github.com/artie-labs/transfer/lib/typing"
@@ -26,8 +27,8 @@ func (r *RelationTestSuite) TestGetPrimaryKey() {
 	pkMap, err := r.GetPrimaryKey([]byte(valString), validTc)
 	assert.NoError(r.T(), err)
 
-	val, isOk := pkMap["id"]
-	assert.True(r.T(), isOk)
+	val, ok := pkMap["id"]
+	assert.True(r.T(), ok)
 	assert.Equal(r.T(), val, float64(47))
 	assert.Equal(r.T(), err, nil)
 }
@@ -35,8 +36,8 @@ func (r *RelationTestSuite) TestGetPrimaryKey() {
 func (r *RelationTestSuite) TestGetPrimaryKeyUUID() {
 	valString := `{"uuid": "ca0cefe9-45cf-44fa-a2ab-ec5e7e5522a3"}`
 	pkMap, err := r.GetPrimaryKey([]byte(valString), validTc)
-	val, isOk := pkMap["uuid"]
-	assert.True(r.T(), isOk)
+	val, ok := pkMap["uuid"]
+	assert.True(r.T(), ok)
 	assert.Equal(r.T(), val, "ca0cefe9-45cf-44fa-a2ab-ec5e7e5522a3")
 	assert.Equal(r.T(), err, nil)
 }
@@ -82,7 +83,7 @@ func (r *RelationTestSuite) TestPostgresEvent() {
 }
 `
 	evt, err := r.Debezium.GetEventFromBytes([]byte(payload))
-	assert.Nil(r.T(), err)
+	assert.NoError(r.T(), err)
 	assert.False(r.T(), evt.DeletePayload())
 
 	evtData, err := evt.GetData(kafkalib.TopicConfig{IncludeDatabaseUpdatedAt: true})
@@ -144,6 +145,12 @@ func (r *RelationTestSuite) TestPostgresEventWithSchemaAndTimestampNoTZ() {
 				"name": "io.debezium.time.MicroTimestamp",
 				"version": 1,
 				"field": "ts_no_tz3"
+			}, {
+				"type": "string",
+				"optional": true,
+				"name": "io.debezium.data.Json",
+				"version": 1,
+				"field": "c_json"
 			}],
 			"optional": true,
 			"name": "dbserver1.inventory.customers.Value",
@@ -163,7 +170,8 @@ func (r *RelationTestSuite) TestPostgresEventWithSchemaAndTimestampNoTZ() {
 			"email": "sally.thomas@acme.com",
 			"ts_no_tz1": 1675360295175445,
 			"ts_no_tz2": 1675360392604675,
-			"ts_no_tz3": 1675360451434545
+			"ts_no_tz3": 1675360451434545,
+			"c_json": "{\"a\": 1, \"b\": 2}"
 		},
 		"source": {
 			"version": "2.0.0.Final",
@@ -186,7 +194,7 @@ func (r *RelationTestSuite) TestPostgresEventWithSchemaAndTimestampNoTZ() {
 }
 `
 	evt, err := r.Debezium.GetEventFromBytes([]byte(payload))
-	assert.Nil(r.T(), err)
+	assert.NoError(r.T(), err)
 	assert.False(r.T(), evt.DeletePayload())
 
 	evtData, err := evt.GetData(kafkalib.TopicConfig{})
@@ -207,6 +215,12 @@ func (r *RelationTestSuite) TestPostgresEventWithSchemaAndTimestampNoTZ() {
 		time.Date(2023, time.February, 2, 17, 51, 35, 175445*1000, time.UTC),
 		evtData["ts_no_tz1"],
 	)
+
+	assert.Equal(r.T(), map[string]any{"a": float64(1), "b": float64(2)}, evtData["c_json"])
+	jsonData, err := converters.StructConverter{}.Convert(evtData["c_json"])
+	assert.NoError(r.T(), err)
+	assert.Equal(r.T(), `{"a":1,"b":2}`, jsonData)
+
 	assert.Equal(r.T(), time.Date(2023, time.February, 2, 17, 54, 11, 451000000, time.UTC), evt.GetExecutionTime())
 	assert.Equal(r.T(), "customers", evt.GetTableName())
 }
@@ -519,11 +533,11 @@ func (r *RelationTestSuite) TestGetEventFromBytes_MySQL() {
 	assert.NoError(r.T(), err)
 
 	// Should have no Artie updated or database updated fields
-	_, isOk := evtData[constants.UpdateColumnMarker]
-	assert.False(r.T(), isOk)
+	_, ok := evtData[constants.UpdateColumnMarker]
+	assert.False(r.T(), ok)
 
-	_, isOk = evtData[constants.DatabaseUpdatedColumnMarker]
-	assert.False(r.T(), isOk)
+	_, ok = evtData[constants.DatabaseUpdatedColumnMarker]
+	assert.False(r.T(), ok)
 
 	evtData, err = evt.GetData(kafkalib.TopicConfig{IncludeDatabaseUpdatedAt: true, IncludeArtieUpdatedAt: true})
 	assert.NoError(r.T(), err)
@@ -538,16 +552,16 @@ func (r *RelationTestSuite) TestGetEventFromBytes_MySQL() {
 	assert.NoError(r.T(), err)
 	assert.NotNil(r.T(), cols)
 
-	col, isOk := cols.GetColumn("abcdef")
-	assert.True(r.T(), isOk)
+	col, ok := cols.GetColumn("abcdef")
+	assert.True(r.T(), ok)
 	assert.Equal(r.T(), "abcdef", col.Name())
 	for key := range evtData {
 		if strings.Contains(key, constants.ArtiePrefix) {
 			continue
 		}
 
-		col, isOk = cols.GetColumn(strings.ToLower(key))
-		assert.Equal(r.T(), true, isOk, key)
+		col, ok = cols.GetColumn(strings.ToLower(key))
+		assert.Equal(r.T(), true, ok, key)
 		assert.Equal(r.T(), typing.Invalid, col.KindDetails, fmt.Sprintf("colName: %v, evtData key: %v", col.Name(), key))
 	}
 }

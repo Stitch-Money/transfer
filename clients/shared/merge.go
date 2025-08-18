@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/artie-labs/transfer/lib"
 	"github.com/artie-labs/transfer/lib/destination"
 	"github.com/artie-labs/transfer/lib/destination/ddl"
 	"github.com/artie-labs/transfer/lib/destination/types"
@@ -15,15 +16,27 @@ import (
 	"github.com/artie-labs/transfer/lib/typing/columns"
 )
 
-const backfillMaxRetries = 1000
+const (
+	backfillMaxRetries     = 1000
+	heartbeatsInitialDelay = 30 * time.Minute
+	heartbeatsInterval     = 2 * time.Minute
+)
 
 func Merge(ctx context.Context, dest destination.Destination, tableData *optimization.TableData, opts types.MergeOpts) error {
 	if tableData.ShouldSkipUpdate() {
 		return nil
 	}
 
-	tableID := dest.IdentifierFor(tableData.TopicConfig(), tableData.Name())
-	tableConfig, err := dest.GetTableConfig(tableID, tableData.TopicConfig().DropDeletedColumns)
+	tableID := dest.IdentifierFor(tableData.TopicConfig().BuildDatabaseAndSchemaPair(), tableData.Name())
+	hb := lib.NewHeartbeats(heartbeatsInitialDelay, heartbeatsInterval, "merge", map[string]any{
+		"table":   tableData.Name(),
+		"tableID": tableID.FullyQualifiedName(),
+	})
+
+	stop := hb.Start()
+	defer stop()
+
+	tableConfig, err := dest.GetTableConfig(ctx, tableID, tableData.TopicConfig().DropDeletedColumns)
 	if err != nil {
 		return fmt.Errorf("failed to get table config: %w", err)
 	}
@@ -31,10 +44,7 @@ func Merge(ctx context.Context, dest destination.Destination, tableData *optimiz
 	srcKeysMissing, targetKeysMissing := columns.DiffAndFilter(
 		tableData.ReadOnlyInMemoryCols().GetColumns(),
 		tableConfig.GetColumns(),
-		tableData.TopicConfig().SoftDelete,
-		tableData.TopicConfig().IncludeArtieUpdatedAt,
-		tableData.TopicConfig().IncludeDatabaseUpdatedAt,
-		tableData.Mode(),
+		tableData.BuildColumnsToKeep(),
 	)
 
 	if tableConfig.CreateTable() {
@@ -51,15 +61,13 @@ func Merge(ctx context.Context, dest destination.Destination, tableData *optimiz
 		return fmt.Errorf("failed to drop columns for table %q: %w", tableID.Table(), err)
 	}
 
-	// TODO: Examine whether [AuditColumnsToDelete] still needs to be called.
-	tableConfig.AuditColumnsToDelete(srcKeysMissing)
 	if err = tableData.MergeColumnsFromDestination(tableConfig.GetColumns()...); err != nil {
 		return fmt.Errorf("failed to merge columns from destination: %w for table %q", err, tableData.Name())
 	}
 
-	temporaryTableID := TempTableIDWithSuffix(dest.IdentifierFor(tableData.TopicConfig(), tableData.Name()), tableData.TempTableSuffix())
+	temporaryTableID := TempTableIDWithSuffix(dest.IdentifierFor(tableData.TopicConfig().BuildDatabaseAndSchemaPair(), tableData.Name()), tableData.TempTableSuffix())
 	defer func() {
-		if dropErr := ddl.DropTemporaryTable(dest, temporaryTableID, false); dropErr != nil {
+		if dropErr := ddl.DropTemporaryTable(ctx, dest, temporaryTableID, false); dropErr != nil {
 			slog.Warn("Failed to drop temporary table", slog.Any("err", dropErr), slog.String("tableName", temporaryTableID.FullyQualifiedName()))
 		}
 	}()
@@ -76,7 +84,7 @@ func Merge(ctx context.Context, dest destination.Destination, tableData *optimiz
 
 		var backfillErr error
 		for attempts := 0; attempts < backfillMaxRetries; attempts++ {
-			backfillErr = BackfillColumn(dest, col, tableID)
+			backfillErr = BackfillColumn(ctx, dest, col, tableID)
 			if backfillErr == nil {
 				err = tableConfig.UpsertColumn(col.Name(), columns.UpsertColumnArg{
 					Backfilled: typing.ToPtr(true),
@@ -151,8 +159,27 @@ func Merge(ctx context.Context, dest destination.Destination, tableData *optimiz
 		return fmt.Errorf("failed to generate merge statements: %w", err)
 	}
 
-	if err = destination.ExecStatements(dest, mergeStatements); err != nil {
+	results, err := destination.ExecContextStatements(ctx, dest, mergeStatements)
+	if err != nil {
 		return fmt.Errorf("failed to execute merge statements: %w", err)
 	}
+
+	if dest.GetConfig().SharedDestinationSettings.EnableMergeAssertion {
+		var totalRowsAffected int64
+		for _, result := range results {
+			rowsAffected, err := result.RowsAffected()
+			if err != nil {
+				return fmt.Errorf("failed to get rows affected: %w", err)
+			}
+
+			totalRowsAffected += rowsAffected
+		}
+
+		// [totalRowsAffected] may be higher if the table contains duplicate rows.
+		if rows := tableData.NumberOfRows(); rows > uint(totalRowsAffected) {
+			return fmt.Errorf("expected %d rows to be affected, got %d", rows, totalRowsAffected)
+		}
+	}
+
 	return nil
 }

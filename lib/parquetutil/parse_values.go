@@ -1,90 +1,100 @@
 package parquetutil
 
 import (
-	"encoding/json"
 	"fmt"
-	"reflect"
-	"strings"
 
-	"github.com/artie-labs/transfer/lib/array"
-	"github.com/artie-labs/transfer/lib/config/constants"
+	"github.com/apache/arrow/go/v17/arrow"
+	"github.com/apache/arrow/go/v17/arrow/array"
+	"github.com/apache/arrow/go/v17/arrow/decimal128"
+	"github.com/apache/arrow/go/v17/arrow/decimal256"
 	"github.com/artie-labs/transfer/lib/typing"
-	"github.com/artie-labs/transfer/lib/typing/decimal"
-	"github.com/artie-labs/transfer/lib/typing/ext"
 )
 
-func ParseValue(colVal any, colKind typing.KindDetails) (any, error) {
-	if colVal == nil {
-		return nil, nil
+// ParseValueForArrow converts a raw value to Arrow-compatible format given column details and location
+func ParseValueForArrow(value any, kindDetails typing.KindDetails) (any, error) {
+	return kindDetails.ParseValueForArrow(value)
+}
+
+// ConvertValueForArrowBuilder converts a parsed value to the appropriate Arrow builder method call
+func ConvertValueForArrowBuilder(builder array.Builder, value any) error {
+	if value == nil {
+		builder.AppendNull()
+		return nil
 	}
 
-	switch colKind.Kind {
-	case typing.Date.Kind:
-		_time, err := ext.ParseDateFromAny(colVal)
+	switch castedBuilder := builder.(type) {
+	case *array.StringBuilder:
+		castedValue, err := typing.AssertType[string](value)
 		if err != nil {
-			return "", fmt.Errorf("failed to cast colVal as time.Time, colVal: %v, err: %w", colVal, err)
+			return fmt.Errorf("failed to cast value to string: %w", err)
 		}
-
-		return _time.Format(ext.PostgresDateFormat), nil
-	case typing.Time.Kind:
-		_time, err := ext.ParseTimeFromAny(colVal)
+		castedBuilder.Append(castedValue)
+	case *array.Int64Builder:
+		castedValue, err := typing.AssertType[int64](value)
 		if err != nil {
-			return "", fmt.Errorf("failed to cast colVal as time.Time, colVal: %v, err: %w", colVal, err)
+			return fmt.Errorf("failed to cast value to int64: %w", err)
 		}
-
-		return _time.Format(ext.PostgresTimeFormat), nil
-	case typing.TimestampNTZ.Kind:
-		_time, err := ext.ParseTimestampNTZFromAny(colVal)
+		castedBuilder.Append(castedValue)
+	case *array.BooleanBuilder:
+		castedValue, err := typing.AssertType[bool](value)
 		if err != nil {
-			return "", fmt.Errorf("failed to cast colVal as time.Time, colVal: %v, err: %w", colVal, err)
+			return fmt.Errorf("failed to cast value to boolean: %w", err)
 		}
-
-		return _time.UnixMilli(), nil
-	case typing.TimestampTZ.Kind:
-		_time, err := ext.ParseTimestampTZFromAny(colVal)
+		castedBuilder.Append(castedValue)
+	case *array.Float32Builder:
+		castedValue, err := typing.AssertType[float32](value)
 		if err != nil {
-			return "", fmt.Errorf("failed to cast colVal as time.Time, colVal: %v, err: %w", colVal, err)
+			return fmt.Errorf("failed to cast value to float32: %w", err)
 		}
-
-		return _time.UnixMilli(), nil
-	case typing.String.Kind:
-		return colVal, nil
-	case typing.Struct.Kind:
-		if colKind == typing.Struct {
-			if strings.Contains(fmt.Sprint(colVal), constants.ToastUnavailableValuePlaceholder) {
-				colVal = map[string]any{
-					"key": constants.ToastUnavailableValuePlaceholder,
-				}
-			}
-
-			if reflect.TypeOf(colVal).Kind() != reflect.String {
-				colValBytes, err := json.Marshal(colVal)
-				if err != nil {
-					return "", err
-				}
-
-				return string(colValBytes), nil
-			}
-		}
-	case typing.Array.Kind:
-		arrayString, err := array.InterfaceToArrayString(colVal, true)
+		castedBuilder.Append(castedValue)
+	case *array.Time32Builder:
+		castedValue, err := typing.AssertType[int32](value)
 		if err != nil {
-			return nil, err
+			return fmt.Errorf("failed to cast value to int32: %w", err)
 		}
-
-		if len(arrayString) == 0 {
-			return nil, nil
-		}
-
-		return arrayString, nil
-	case typing.EDecimal.Kind:
-		decimalValue, err := typing.AssertType[*decimal.Decimal](colVal)
+		castedBuilder.Append(arrow.Time32(castedValue))
+	case *array.Date32Builder:
+		castedValue, err := typing.AssertType[int32](value)
 		if err != nil {
-			return nil, err
+			return fmt.Errorf("failed to cast value to int32: %w", err)
+		}
+		castedBuilder.Append(arrow.Date32(castedValue))
+	case *array.TimestampBuilder:
+		castedValue, err := typing.AssertType[int64](value)
+		if err != nil {
+			return fmt.Errorf("failed to cast value to int64: %w", err)
+		}
+		castedBuilder.Append(arrow.Timestamp(castedValue))
+	case *array.Decimal128Builder:
+		castedValue, err := typing.AssertType[decimal128.Num](value)
+		if err != nil {
+			return fmt.Errorf("failed to cast value to decimal128.Num: %w", err)
+		}
+		castedBuilder.Append(castedValue)
+	case *array.Decimal256Builder:
+		castedValue, err := typing.AssertType[decimal256.Num](value)
+		if err != nil {
+			return fmt.Errorf("failed to cast value to decimal256.Num: %w", err)
+		}
+		castedBuilder.Append(castedValue)
+	case *array.ListBuilder:
+		castedValue, err := typing.AssertType[[]string](value)
+		if err != nil {
+			return fmt.Errorf("failed to cast value to []string: %w", err)
 		}
 
-		return decimalValue.String(), nil
+		castedBuilder.Append(true)
+		valueBuilder, ok := castedBuilder.ValueBuilder().(*array.StringBuilder)
+		if !ok {
+			return fmt.Errorf("failed to cast value builder to array.StringBuilder")
+		}
+
+		for _, item := range castedValue {
+			valueBuilder.Append(item)
+		}
+	default:
+		return fmt.Errorf("unsupported builder type: %T", builder)
 	}
 
-	return colVal, nil
+	return nil
 }

@@ -28,10 +28,15 @@ func InterfaceToArrayString(val any, recastAsArray bool) ([]string, error) {
 	for i := 0; i < list.Len(); i++ {
 		kind := list.Index(i).Kind()
 		value := list.Index(i).Interface()
+		if stringValue, ok := value.(string); ok {
+			vals = append(vals, stringValue)
+			continue
+		}
+
 		var shouldParse bool
 		if kind == reflect.Interface {
-			valMap, isOk := value.(map[string]any)
-			if isOk {
+			valMap, ok := value.(map[string]any)
+			if ok {
 				value = valMap
 			}
 
@@ -46,6 +51,7 @@ func InterfaceToArrayString(val any, recastAsArray bool) ([]string, error) {
 
 			vals = append(vals, string(bytes))
 		} else {
+			// TODO: Do we need to escape backslashes?
 			vals = append(vals, stringutil.EscapeBackslashes(fmt.Sprint(value)))
 		}
 	}

@@ -2,6 +2,7 @@ package kafkalib
 
 import (
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 
@@ -9,19 +10,18 @@ import (
 	"github.com/artie-labs/transfer/lib/stringutil"
 )
 
-// GetUniqueTopicConfigs - will return a list of unique TopicConfigs based on the database and schema in O(n) time.
-func GetUniqueTopicConfigs(tcs []*TopicConfig) []TopicConfig {
-	var uniqueTopicConfigs []TopicConfig
-	seenMap := make(map[string]bool)
+type DatabaseAndSchemaPair struct {
+	Database string
+	Schema   string
+}
+
+func GetUniqueDatabaseAndSchemaPairs(tcs []*TopicConfig) []DatabaseAndSchemaPair {
+	seenMap := make(map[DatabaseAndSchemaPair]bool)
 	for _, tc := range tcs {
-		key := fmt.Sprintf("%s###%s", tc.Database, tc.Schema)
-		if _, isOk := seenMap[key]; !isOk {
-			seenMap[key] = true                                  // Mark this as seen
-			uniqueTopicConfigs = append(uniqueTopicConfigs, *tc) // Now add this to the list
-		}
+		seenMap[tc.BuildDatabaseAndSchemaPair()] = true
 	}
 
-	return uniqueTopicConfigs
+	return slices.Collect(maps.Keys(seenMap))
 }
 
 type MultiStepMergeSettings struct {
@@ -42,29 +42,52 @@ func (m MultiStepMergeSettings) Validate() error {
 	return nil
 }
 
+type StaticColumn struct {
+	Name  string `yaml:"name"`
+	Value string `yaml:"value"`
+}
+
 type TopicConfig struct {
-	Database                 string `yaml:"db"`
-	TableName                string `yaml:"tableName"`
-	Schema                   string `yaml:"schema"`
-	Topic                    string `yaml:"topic"`
-	CDCFormat                string `yaml:"cdcFormat"`
-	CDCKeyFormat             string `yaml:"cdcKeyFormat"`
-	DropDeletedColumns       bool   `yaml:"dropDeletedColumns"`
-	SoftDelete               bool   `yaml:"softDelete"`
-	SkippedOperations        string `yaml:"skippedOperations,omitempty"`
-	IncludeArtieUpdatedAt    bool   `yaml:"includeArtieUpdatedAt"`
-	IncludeDatabaseUpdatedAt bool   `yaml:"includeDatabaseUpdatedAt"`
+	Database                   string `yaml:"db"`
+	TableName                  string `yaml:"tableName"`
+	Schema                     string `yaml:"schema"`
+	Topic                      string `yaml:"topic"`
+	CDCFormat                  string `yaml:"cdcFormat"`
+	CDCKeyFormat               string `yaml:"cdcKeyFormat"`
+	DropDeletedColumns         bool   `yaml:"dropDeletedColumns"`
+	SoftDelete                 bool   `yaml:"softDelete"`
+	SkippedOperations          string `yaml:"skippedOperations,omitempty"`
+	IncludeArtieUpdatedAt      bool   `yaml:"includeArtieUpdatedAt"`
+	IncludeArtieOperation      bool   `yaml:"includeArtieOperation"`
+	IncludeDatabaseUpdatedAt   bool   `yaml:"includeDatabaseUpdatedAt"`
+	IncludeSourceMetadata      bool   `yaml:"includeSourceMetadata"`
+	IncludeFullSourceTableName bool   `yaml:"includeFullSourceTableName"`
 	// TODO: Deprecate BigQueryPartitionSettings and use AdditionalMergePredicates instead.
 	BigQueryPartitionSettings *partition.BigQuerySettings `yaml:"bigQueryPartitionSettings,omitempty"`
 	AdditionalMergePredicates []partition.MergePredicates `yaml:"additionalMergePredicates,omitempty"`
 	ColumnsToHash             []string                    `yaml:"columnsToHash,omitempty"`
+
+	// [ColumnsToInclude] can be used to specify the exact columns that should be written to the destination.
+	ColumnsToInclude []string `yaml:"columnsToInclude,omitempty"`
 	// [ColumnsToExclude] can be used to exclude columns from being written to the destination.
-	ColumnsToExclude       []string                `yaml:"columnsToExclude,omitempty"`
-	PrimaryKeysOverride    []string                `yaml:"primaryKeysOverride,omitempty"`
+	ColumnsToExclude    []string `yaml:"columnsToExclude,omitempty"`
+	PrimaryKeysOverride []string `yaml:"primaryKeysOverride,omitempty"`
+
+	// [IncludePrimaryKeys] - This is used to specify an additional column that can be used as part of the primary key
+	// An example of this could be to include the full source table name.
+	IncludePrimaryKeys     []string                `yaml:"includePrimaryKeys,omitempty"`
 	MultiStepMergeSettings *MultiStepMergeSettings `yaml:"multiStepMergeSettings,omitempty"`
+
+	// [StaticColumns] can be used to specify static columns that should be written to the destination.
+	// This is useful for cases where you want to add additional columns to provide metadata, etc in the destination.
+	StaticColumns []StaticColumn `yaml:"staticColumns,omitempty"`
 
 	// Internal metadata
 	opsToSkipMap map[string]bool `yaml:"-"`
+}
+
+func (t TopicConfig) BuildDatabaseAndSchemaPair() DatabaseAndSchemaPair {
+	return DatabaseAndSchemaPair{Database: t.Database, Schema: t.Schema}
 }
 
 const (
@@ -93,8 +116,8 @@ func (t TopicConfig) ShouldSkip(op string) bool {
 		panic("opsToSkipMap is nil, Load() was never called")
 	}
 
-	_, isOk := t.opsToSkipMap[op]
-	return isOk
+	_, ok := t.opsToSkipMap[op]
+	return ok
 }
 
 func (t TopicConfig) String() string {
@@ -125,6 +148,16 @@ func (t TopicConfig) Validate() error {
 		if err := t.MultiStepMergeSettings.Validate(); err != nil {
 			return fmt.Errorf("invalid multi-step merge settings: %w", err)
 		}
+	}
+
+	// You can't specify both [ColumnsToInclude] and [ColumnsToExclude]
+	if len(t.ColumnsToInclude) > 0 && len(t.ColumnsToExclude) > 0 {
+		return fmt.Errorf("cannot specify both columnsToInclude and columnsToExclude")
+	}
+
+	// You cannot have both [PrimaryKeysOverride] and [IncludePrimaryKeys]
+	if len(t.PrimaryKeysOverride) > 0 && len(t.IncludePrimaryKeys) > 0 {
+		return fmt.Errorf("cannot specify both primaryKeysOverride and includePrimaryKeys")
 	}
 
 	return nil

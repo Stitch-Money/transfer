@@ -11,12 +11,17 @@ func TestDetails_BigQueryKind(t *testing.T) {
 	details := NewDetails(PrecisionNotSpecified, DefaultScale)
 	{
 		// numericTypeForVariableNumeric = false
-		assert.Equal(t, "STRING", details.BigQueryKind(false))
+		assert.Equal(t, "NUMERIC", details.BigQueryKind(false))
 	}
 	{
 		// numericTypeForVariableNumeric = true
 		assert.Equal(t, "BIGNUMERIC", details.BigQueryKind(true))
 	}
+}
+
+func TestDetails_NotSet(t *testing.T) {
+	details := NewDetails(PrecisionNotSpecified, DefaultScale)
+	assert.True(t, details.NotSet())
 }
 
 func TestDecimalDetailsKind(t *testing.T) {
@@ -36,7 +41,7 @@ func TestDecimalDetailsKind(t *testing.T) {
 			Precision:             -1,
 			ExpectedSnowflakeKind: "STRING",
 			ExpectedRedshiftKind:  "TEXT",
-			ExpectedBigQueryKind:  "STRING",
+			ExpectedBigQueryKind:  "NUMERIC",
 		},
 		{
 			Name:                  "numeric(39, 0)",
@@ -85,5 +90,19 @@ func TestDecimalDetailsKind(t *testing.T) {
 		assert.Equal(t, testCase.ExpectedSnowflakeKind, d.SnowflakeKind(), testCase.Name)
 		assert.Equal(t, testCase.ExpectedRedshiftKind, d.RedshiftKind(), testCase.Name)
 		assert.Equal(t, testCase.ExpectedBigQueryKind, d.BigQueryKind(false), testCase.Name)
+		assert.False(t, d.NotSet(), testCase.Name)
+	}
+}
+
+func TestDetails_PostgresKind(t *testing.T) {
+	detailsToValueMap := map[Details]string{
+		NewDetails(PrecisionNotSpecified, DefaultScale): "NUMERIC",
+		NewDetails(10, 2):  "NUMERIC(10, 2)",
+		NewDetails(10, 0):  "NUMERIC(10, 0)",
+		NewDetails(47, 20): "NUMERIC(47, 20)",
+	}
+
+	for details, expectedValue := range detailsToValueMap {
+		assert.Equal(t, expectedValue, details.PostgresKind())
 	}
 }

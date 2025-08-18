@@ -16,25 +16,15 @@ type Sentry struct {
 	DSN string `yaml:"dsn"`
 }
 
-type Kafka struct {
-	// Comma-separated Kafka servers to port.
-	// e.g. host1:port1,host2:port2,...
-	// Following kafka's spec mentioned here: https://kafka.apache.org/documentation/#producerconfigs_bootstrap.servers
-	BootstrapServer string                  `yaml:"bootstrapServer"`
-	GroupID         string                  `yaml:"groupID"`
-	TopicConfigs    []*kafkalib.TopicConfig `yaml:"topicConfigs"`
-
-	// Optional parameters
-	Username        string `yaml:"username,omitempty"`
-	Password        string `yaml:"password,omitempty"`
-	EnableAWSMSKIAM bool   `yaml:"enableAWSMKSIAM,omitempty"`
-	DisableTLS      bool   `yaml:"disableTLS,omitempty"`
-	SaslMechanism   string `yaml:"saslMechanism,omitempty"`
-}
-
 type SharedDestinationColumnSettings struct {
+	// TODO: Deprecate BigQueryNumericForVariableNumeric in favor of UseBigNumericForVariableNumeric
 	// BigQueryNumericForVariableNumeric - If enabled, we will use BigQuery's NUMERIC type for variable numeric types.
 	BigQueryNumericForVariableNumeric bool `yaml:"bigQueryNumericForVariableNumeric"`
+	UseBigNumericForVariableNumeric   bool `yaml:"useBigNumericForVariableNumeric"`
+}
+
+func (s SharedDestinationColumnSettings) BigNumericForVariableNumeric() bool {
+	return s.UseBigNumericForVariableNumeric || s.BigQueryNumericForVariableNumeric
 }
 
 type SharedDestinationSettings struct {
@@ -44,6 +34,10 @@ type SharedDestinationSettings struct {
 	// This is only supported by Redshift at the moment.
 	ExpandStringPrecision bool                            `yaml:"expandStringPrecision"`
 	ColumnSettings        SharedDestinationColumnSettings `yaml:"columnSettings"`
+	// TODO: Standardize on this method.
+	UseNewStringMethod bool `yaml:"useNewStringMethod"`
+	// [EnableMergeAssertion] - This will enable the merge assertion checks for the destination.
+	EnableMergeAssertion bool `yaml:"enableMergeAssertion,omitempty"`
 }
 
 type Reporting struct {
@@ -62,12 +56,13 @@ type Config struct {
 	BufferRows           uint `yaml:"bufferRows"`
 
 	// Supported message queues
-	Kafka *Kafka `yaml:"kafka,omitempty"`
+	Kafka *kafkalib.Kafka `yaml:"kafka,omitempty"`
 
 	// Supported destinations
 	BigQuery   *BigQuery   `yaml:"bigquery,omitempty"`
 	Databricks *Databricks `yaml:"databricks,omitempty"`
 	MSSQL      *MSSQL      `yaml:"mssql,omitempty"`
+	Postgres   *Postgres   `yaml:"postgres,omitempty"`
 	Snowflake  *Snowflake  `yaml:"snowflake,omitempty"`
 	Redshift   *Redshift   `yaml:"redshift,omitempty"`
 	S3         *S3Settings `yaml:"s3,omitempty"`

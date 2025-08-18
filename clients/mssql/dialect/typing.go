@@ -10,18 +10,18 @@ import (
 	"github.com/artie-labs/transfer/lib/typing"
 )
 
-func (MSSQLDialect) DataTypeForKind(kindDetails typing.KindDetails, isPk bool, _ config.SharedDestinationColumnSettings) string {
+func (MSSQLDialect) DataTypeForKind(kindDetails typing.KindDetails, isPk bool, _ config.SharedDestinationColumnSettings) (string, error) {
 	// Primary keys cannot exceed 900 chars in length.
 	// https://learn.microsoft.com/en-us/sql/relational-databases/tables/primary-and-foreign-key-constraints?view=sql-server-ver16#PKeys
 	const maxVarCharLengthForPrimaryKey = 900
 
 	switch kindDetails.Kind {
 	case typing.Float.Kind:
-		return "float"
+		return "float", nil
 	case typing.Integer.Kind:
-		return "bigint"
+		return "bigint", nil
 	case typing.Struct.Kind, typing.Array.Kind:
-		return "NVARCHAR(MAX)"
+		return "NVARCHAR(MAX)", nil
 	case typing.String.Kind:
 		if kindDetails.OptionalStringPrecision != nil {
 			precision := *kindDetails.OptionalStringPrecision
@@ -29,64 +29,66 @@ func (MSSQLDialect) DataTypeForKind(kindDetails typing.KindDetails, isPk bool, _
 				precision = min(maxVarCharLengthForPrimaryKey, precision)
 			}
 
-			return fmt.Sprintf("VARCHAR(%d)", precision)
+			return fmt.Sprintf("VARCHAR(%d)", precision), nil
 		}
 
 		if isPk {
-			return fmt.Sprintf("VARCHAR(%d)", maxVarCharLengthForPrimaryKey)
+			return fmt.Sprintf("VARCHAR(%d)", maxVarCharLengthForPrimaryKey), nil
 		}
 
-		return "VARCHAR(MAX)"
+		return "VARCHAR(MAX)", nil
 	case typing.Boolean.Kind:
-		return "BIT"
+		return "BIT", nil
 	case typing.Date.Kind:
-		return "DATE"
+		return "DATE", nil
 	case typing.Time.Kind:
-		return "TIME"
+		return "TIME", nil
 	case typing.TimestampNTZ.Kind:
 		// Using datetime2 because it's the recommendation, and it provides more precision: https://stackoverflow.com/a/1884088
-		return "datetime2"
+		return "datetime2", nil
 	case typing.TimestampTZ.Kind:
-		return "datetimeoffset"
+		return "datetimeoffset", nil
 	case typing.EDecimal.Kind:
-		return kindDetails.ExtendedDecimalDetails.MsSQLKind()
+		return kindDetails.ExtendedDecimalDetails.MsSQLKind(), nil
 	}
 
-	return kindDetails.Kind
+	return kindDetails.Kind, nil
 }
 
-func (MSSQLDialect) KindForDataType(rawType string, stringPrecision string) (typing.KindDetails, error) {
-	rawType = strings.ToLower(rawType)
-	if strings.HasPrefix(rawType, "numeric") {
-		_, parameters, err := sql.ParseDataTypeDefinition(rawType)
-		if err != nil {
-			return typing.Invalid, err
-		}
-		return typing.ParseNumeric(parameters)
+func (MSSQLDialect) KindForDataType(rawType string) (typing.KindDetails, error) {
+	dataType, parameters, err := sql.ParseDataTypeDefinition(strings.ToLower(rawType))
+	if err != nil {
+		return typing.Invalid, err
 	}
 
-	switch rawType {
+	switch dataType {
 	case
 		"char",
 		"varchar",
 		"nchar",
 		"nvarchar",
+		"text",
 		"ntext":
-		var strPrecision *int32
-		precision, err := strconv.ParseInt(stringPrecision, 10, 32)
-		if err == nil {
-			strPrecision = typing.ToPtr(int32(precision))
+		if len(parameters) != 1 {
+			return typing.Invalid, fmt.Errorf("expected 1 parameter for %q, got %d", rawType, len(parameters))
 		}
 
-		// precision of -1 means it's MAX.
+		precision, err := strconv.ParseInt(parameters[0], 10, 32)
+		if err != nil {
+			return typing.Invalid, err
+		}
+
 		if precision == -1 {
-			strPrecision = nil
+			// Precision of -1 means it's MAX.
+			return typing.String, nil
 		}
 
 		return typing.KindDetails{
 			Kind:                    typing.String.Kind,
-			OptionalStringPrecision: strPrecision,
+			OptionalStringPrecision: typing.ToPtr(int32(precision)),
 		}, nil
+	case "decimal", "numeric":
+		return typing.ParseNumeric(parameters)
 	case
 		"smallint",
 		"tinyint",
@@ -107,9 +109,7 @@ func (MSSQLDialect) KindForDataType(rawType string, stringPrecision string) (typ
 		return typing.Date, nil
 	case "bit":
 		return typing.Boolean, nil
-	case "text":
-		return typing.String, nil
 	default:
-		return typing.Invalid, fmt.Errorf("unsupported data type: %q", rawType)
+		return typing.Invalid, typing.NewUnsupportedDataTypeError(fmt.Sprintf("unsupported data type: %q", rawType))
 	}
 }

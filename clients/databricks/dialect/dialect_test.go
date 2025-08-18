@@ -330,8 +330,7 @@ func TestDatabricksDialect_BuildCopyIntoQuery(t *testing.T) {
 	tempTableID.FullyQualifiedNameReturns("{{fq_name}}")
 
 	assert.Equal(t, fmt.Sprintf(`
-COPY INTO {{fq_name}}
-BY POSITION
+COPY INTO {{fq_name}} (id, foo)
 FROM (
     SELECT _c0, _c1 FROM 'dbfs:/path/to/file.csv.gz'
 )
@@ -342,6 +341,7 @@ FORMAT_OPTIONS (
     'header' = 'false',
     'nullValue' = '%s',
     'multiLine' = 'true',
-    'compression' = 'gzip'
-);`, constants.NullValuePlaceholder), dialect.BuildCopyIntoQuery(tempTableID, []string{"_c0", "_c1"}, "dbfs:/path/to/file.csv.gz"))
+    'compression' = 'gzip',
+    'lineSep' = '\n'
+);`, constants.NullValuePlaceholder), dialect.BuildCopyIntoQuery(tempTableID, []string{"id", "foo"}, []string{"_c0", "_c1"}, "dbfs:/path/to/file.csv.gz"))
 }

@@ -29,7 +29,12 @@ type Store struct {
 
 	// Generated:
 	_awsCredentials *awslib.Credentials
+	_awsS3Client    awslib.S3Client
 	db.Store
+}
+
+func (s Store) GetConfig() config.Config {
+	return s.config
 }
 
 func (s *Store) BuildCredentialsClause(ctx context.Context) (string, error) {
@@ -45,8 +50,18 @@ func (s *Store) BuildCredentialsClause(ctx context.Context) (string, error) {
 	return fmt.Sprintf(`ACCESS_KEY_ID '%s' SECRET_ACCESS_KEY '%s' SESSION_TOKEN '%s'`, creds.Value.AccessKeyID, creds.Value.SecretAccessKey, creds.Value.SessionToken), nil
 }
 
-func (s *Store) DropTable(_ context.Context, _ sql.TableIdentifier) error {
-	return fmt.Errorf("not supported")
+func (s *Store) DropTable(ctx context.Context, tableID sql.TableIdentifier) error {
+	if !tableID.AllowToDrop() {
+		return fmt.Errorf("table %q is not allowed to be dropped", tableID.FullyQualifiedName())
+	}
+
+	if _, err := s.ExecContext(ctx, s.Dialect().BuildDropTableQuery(tableID)); err != nil {
+		return fmt.Errorf("failed to drop table: %w", err)
+	}
+
+	// We'll then clear it from our cache
+	s.configMap.RemoveTable(tableID)
+	return nil
 }
 
 func (s *Store) Append(ctx context.Context, tableData *optimization.TableData, _ bool) error {
@@ -65,8 +80,8 @@ func (s *Store) Merge(ctx context.Context, tableData *optimization.TableData) (b
 	return true, nil
 }
 
-func (s *Store) IdentifierFor(topicConfig kafkalib.TopicConfig, table string) sql.TableIdentifier {
-	return dialect.NewTableIdentifier(topicConfig.Schema, table)
+func (s *Store) IdentifierFor(databaseAndSchema kafkalib.DatabaseAndSchemaPair, table string) sql.TableIdentifier {
+	return dialect.NewTableIdentifier(databaseAndSchema.Schema, table)
 }
 
 func (s *Store) GetConfigMap() *types.DestinationTableConfigMap {
@@ -85,7 +100,7 @@ func (s *Store) dialect() dialect.RedshiftDialect {
 	return dialect.RedshiftDialect{}
 }
 
-func (s *Store) GetTableConfig(tableID sql.TableIdentifier, dropDeletedColumns bool) (*types.DestinationTableConfig, error) {
+func (s *Store) GetTableConfig(ctx context.Context, tableID sql.TableIdentifier, dropDeletedColumns bool) (*types.DestinationTableConfig, error) {
 	return shared.GetTableCfgArgs{
 		Destination:           s,
 		TableID:               tableID,
@@ -94,22 +109,22 @@ func (s *Store) GetTableConfig(tableID sql.TableIdentifier, dropDeletedColumns b
 		ColumnNameForDataType: "data_type",
 		ColumnNameForComment:  "description",
 		DropDeletedColumns:    dropDeletedColumns,
-	}.GetTableConfig()
+	}.GetTableConfig(ctx)
 }
 
-func (s *Store) SweepTemporaryTables(_ context.Context) error {
-	tcs, err := s.config.TopicConfigs()
-	if err != nil {
-		return err
-	}
-
-	return shared.Sweep(s, tcs, s.dialect().BuildSweepQuery)
+func (s *Store) SweepTemporaryTables(ctx context.Context) error {
+	return shared.Sweep(ctx, s, s.config.TopicConfigs(), s.dialect().BuildSweepQuery)
 }
 
-func (s *Store) Dedupe(tableID sql.TableIdentifier, primaryKeys []string, includeArtieUpdatedAt bool) error {
+func (s *Store) Dedupe(ctx context.Context, tableID sql.TableIdentifier, primaryKeys []string, includeArtieUpdatedAt bool) error {
 	stagingTableID := shared.TempTableID(tableID)
 	dedupeQueries := s.Dialect().BuildDedupeQueries(tableID, stagingTableID, primaryKeys, includeArtieUpdatedAt)
-	return destination.ExecStatements(s, dedupeQueries)
+
+	if _, err := destination.ExecContextStatements(ctx, s, dedupeQueries); err != nil {
+		return fmt.Errorf("failed to dedupe: %w", err)
+	}
+
+	return nil
 }
 
 func LoadRedshift(ctx context.Context, cfg config.Config, _store *db.Store) (*Store, error) {
@@ -156,7 +171,27 @@ func LoadRedshift(ctx context.Context, cfg config.Config, _store *db.Store) (*St
 		}
 
 		s._awsCredentials = &creds
+	} else {
+		awsCfg, err := awslib.NewDefaultConfig(ctx, os.Getenv("AWS_REGION"))
+		if err != nil {
+			return nil, fmt.Errorf("failed to build aws config: %w", err)
+		}
+
+		s._awsS3Client = awslib.NewS3Client(awsCfg)
 	}
 
 	return s, nil
+}
+
+func (s *Store) BuildS3Client(ctx context.Context) (awslib.S3Client, error) {
+	if s._awsCredentials != nil {
+		creds, err := s._awsCredentials.BuildCredentials(ctx)
+		if err != nil {
+			return awslib.S3Client{}, fmt.Errorf("failed to build credentials: %w", err)
+		}
+
+		return awslib.NewS3Client(awslib.NewConfigWithCredentialsAndRegion(creds, os.Getenv("AWS_REGION"))), nil
+	}
+
+	return s._awsS3Client, nil
 }

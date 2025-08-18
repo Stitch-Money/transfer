@@ -40,24 +40,35 @@ func (s *Store) PrepareTemporaryTable(ctx context.Context, tableData *optimizati
 
 	defer stmt.Close()
 
-	for _, value := range tableData.Rows() {
-		var row []any
+	for _, row := range tableData.Rows() {
+		var parsedValues []any
 		for _, col := range cols {
-			castedValue, castErr := parseValue(value[col.Name()], col)
-			if castErr != nil {
-				return castErr
+			value, _ := row.GetValue(col.Name())
+			parsedValue, err := parseValue(value, col)
+			if err != nil {
+				return fmt.Errorf("failed to parse value: %w", err)
 			}
 
-			row = append(row, castedValue)
+			parsedValues = append(parsedValues, parsedValue)
 		}
 
-		if _, err = stmt.ExecContext(ctx, row...); err != nil {
+		if _, err = stmt.ExecContext(ctx, parsedValues...); err != nil {
 			return fmt.Errorf("failed to copy row: %w", err)
 		}
 	}
 
-	if _, err = stmt.ExecContext(ctx); err != nil {
+	results, err := stmt.ExecContext(ctx)
+	if err != nil {
 		return fmt.Errorf("failed to finalize bulk insert: %w", err)
+	}
+
+	rowsLoaded, err := results.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get rows affected: %w", err)
+	}
+
+	if expectedRows := int64(tableData.NumberOfRows()); rowsLoaded != expectedRows {
+		return fmt.Errorf("expected %d rows to be loaded, but got %d", expectedRows, rowsLoaded)
 	}
 
 	if err = tx.Commit(); err != nil {

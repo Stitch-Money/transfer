@@ -10,41 +10,40 @@ import (
 )
 
 // Ref: https://iceberg.apache.org/docs/latest/spark-getting-started/#iceberg-type-to-spark-type
-
-func (IcebergDialect) DataTypeForKind(kindDetails typing.KindDetails, _ bool, _ config.SharedDestinationColumnSettings) string {
+func (IcebergDialect) DataTypeForKind(kindDetails typing.KindDetails, _ bool, _ config.SharedDestinationColumnSettings) (string, error) {
 	switch kindDetails.Kind {
 	case typing.Boolean.Kind:
-		return "BOOLEAN"
+		return "BOOLEAN", nil
 	case
 		typing.Array.Kind,
 		typing.Struct.Kind,
 		typing.String.Kind,
 		typing.Time.Kind:
-		return "STRING"
+		return "STRING", nil
 	case typing.Float.Kind:
-		return "DOUBLE"
+		return "DOUBLE", nil
 	case typing.EDecimal.Kind:
-		return kindDetails.ExtendedDecimalDetails.IcebergKind()
+		return kindDetails.ExtendedDecimalDetails.IcebergKind(), nil
 	case typing.Integer.Kind:
 		if kindDetails.OptionalIntegerKind != nil {
 			switch *kindDetails.OptionalIntegerKind {
 			case typing.SmallIntegerKind, typing.IntegerKind:
-				return "INTEGER"
+				return "INTEGER", nil
 			}
 		}
-		return "LONG"
+		return "LONG", nil
 	case typing.Date.Kind:
-		return "DATE"
+		return "DATE", nil
 	case typing.TimestampNTZ.Kind:
-		return "TIMESTAMP_NTZ"
+		return "TIMESTAMP_NTZ", nil
 	case typing.TimestampTZ.Kind:
-		return "TIMESTAMP"
+		return "TIMESTAMP", nil
 	default:
-		return kindDetails.Kind
+		return kindDetails.Kind, nil
 	}
 }
 
-func (IcebergDialect) KindForDataType(rawType string, _ string) (typing.KindDetails, error) {
+func (IcebergDialect) KindForDataType(rawType string) (typing.KindDetails, error) {
 	rawType = strings.ToLower(rawType)
 	if strings.HasPrefix(rawType, "decimal") {
 		_, parameters, err := sql.ParseDataTypeDefinition(rawType)

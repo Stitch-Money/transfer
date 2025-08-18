@@ -5,6 +5,10 @@ import (
 )
 
 const (
+	// Environment variables:
+	// [KafkaHWMEnvVar] - If set, we will have an additional Kafka high watermark check to prevent duplicate messages.
+	KafkaHWMEnvVar = "KAFKA_HWM"
+
 	NullValuePlaceholder             = "__artie_null_value"
 	ToastUnavailableValuePlaceholder = "__debezium_unavailable_value"
 
@@ -23,11 +27,13 @@ const (
 	// not a real column and should never be included in the target table.
 	OnlySetDeleteColumnMarker = ArtiePrefix + "_only_set_delete"
 
-	DeletionConfidencePadding   = 4 * time.Hour
-	UpdateColumnMarker          = ArtiePrefix + "_updated_at"
-	DatabaseUpdatedColumnMarker = ArtiePrefix + "_db_updated_at"
-	OperationColumnMarker       = ArtiePrefix + "_operation"
-	ExceededValueMarker         = ArtiePrefix + "_exceeded_value"
+	DeletionConfidencePadding       = 4 * time.Hour
+	UpdateColumnMarker              = ArtiePrefix + "_updated_at"
+	DatabaseUpdatedColumnMarker     = ArtiePrefix + "_db_updated_at"
+	OperationColumnMarker           = ArtiePrefix + "_operation"
+	ExceededValueMarker             = ArtiePrefix + "_exceeded_value"
+	SourceMetadataColumnMarker      = ArtiePrefix + "_source_metadata"
+	FullSourceTableNameColumnMarker = ArtiePrefix + "_full_source_table_name"
 
 	TemporaryTableTTL = 6 * time.Hour
 
@@ -45,6 +51,16 @@ const (
 	DefaultS3TablesPackage = "software.amazon.s3tables:s3-tables-catalog-for-iceberg-runtime:0.1.4"
 )
 
+var ArtieColumns = []string{
+	DeleteColumnMarker,
+	OnlySetDeleteColumnMarker,
+	UpdateColumnMarker,
+	DatabaseUpdatedColumnMarker,
+	OperationColumnMarker,
+	SourceMetadataColumnMarker,
+	FullSourceTableNameColumnMarker,
+}
+
 // ExporterKind is used for the Telemetry package
 type ExporterKind string
 
@@ -54,8 +70,8 @@ const Datadog ExporterKind = "datadog"
 type ColumnOperation string
 
 const (
-	Add    ColumnOperation = "add"
-	Delete ColumnOperation = "drop"
+	AddColumn  ColumnOperation = "add"
+	DropColumn ColumnOperation = "drop"
 )
 
 type QueueKind string
@@ -72,6 +88,7 @@ const (
 	BigQuery   DestinationKind = "bigquery"
 	Databricks DestinationKind = "databricks"
 	MSSQL      DestinationKind = "mssql"
+	Postgres   DestinationKind = "postgres"
 	Redshift   DestinationKind = "redshift"
 	S3         DestinationKind = "s3"
 	Snowflake  DestinationKind = "snowflake"
@@ -86,6 +103,7 @@ var ValidDestinations = []DestinationKind{
 	S3,
 	Snowflake,
 	Iceberg,
+	Postgres,
 }
 
 func IsValidDestination(destination DestinationKind) bool {
@@ -104,10 +122,7 @@ type ColComment struct {
 
 type S3OutputFormat string
 
-const (
-	// TODO - We should support TSV, Avro
-	ParquetFormat S3OutputFormat = "parquet"
-)
+const ParquetFormat S3OutputFormat = "parquet"
 
 func IsValidS3OutputFormat(format S3OutputFormat) bool {
 	return format == ParquetFormat
@@ -118,4 +133,13 @@ type TableAlias string
 const (
 	StagingAlias TableAlias = "stg"
 	TargetAlias  TableAlias = "tgt"
+)
+
+type Operation string
+
+const (
+	Create   Operation = "c"
+	Update   Operation = "u"
+	Delete   Operation = "d"
+	Backfill Operation = "r"
 )

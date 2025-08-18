@@ -3,7 +3,6 @@ package mongo
 import (
 	"encoding/json"
 	"fmt"
-	"reflect"
 	"time"
 
 	"github.com/artie-labs/transfer/lib/cdc"
@@ -42,24 +41,6 @@ func (Debezium) GetEventFromBytes(bytes []byte) (cdc.Event, error) {
 		after, err := mongo.JSONEToMap([]byte(*schemaEventPayload.Payload.After))
 		if err != nil {
 			return nil, fmt.Errorf("failed to call mongo JSONEToMap: %w", err)
-		}
-
-		// Now, let's iterate over each key. If the value is a map, we'll need to JSON marshal it.
-		// We do this to ensure parity with how relational Debezium emits the message.
-		for key, value := range after {
-			switch value.(type) {
-			case nil, string, int, int32, int64, float32, float64, bool:
-				continue
-			default:
-				if reflect.TypeOf(value).Kind() == reflect.Map {
-					valBytes, err := json.Marshal(value)
-					if err != nil {
-						return nil, fmt.Errorf("failed to marshal: %w", err)
-					}
-
-					after[key] = string(valBytes)
-				}
-			}
 		}
 
 		schemaEventPayload.Payload.afterMap = after
@@ -101,8 +82,8 @@ func (Debezium) GetPrimaryKey(key []byte, tc kafkalib.TopicConfig) (map[string]a
 		return nil, err
 	}
 
-	value, isOk := kvMap["id"]
-	if isOk {
+	value, ok := kvMap["id"]
+	if ok {
 		// Debezium will write MongoDB's primary key `_id` as `id` in the partition key, so we are renaming it back to `_id`
 		kvMap["_id"] = value
 		delete(kvMap, "id")
@@ -111,12 +92,12 @@ func (Debezium) GetPrimaryKey(key []byte, tc kafkalib.TopicConfig) (map[string]a
 	return kvMap, nil
 }
 
-func (s *SchemaEventPayload) Operation() string {
+func (s *SchemaEventPayload) Operation() constants.Operation {
 	return s.Payload.Operation
 }
 
 func (s *SchemaEventPayload) DeletePayload() bool {
-	return s.Payload.Operation == "d"
+	return s.Payload.Operation == constants.Delete
 }
 
 func (s *SchemaEventPayload) GetExecutionTime() time.Time {
@@ -125,6 +106,20 @@ func (s *SchemaEventPayload) GetExecutionTime() time.Time {
 
 func (s *SchemaEventPayload) GetTableName() string {
 	return s.Payload.Source.Collection
+}
+
+func (s *SchemaEventPayload) GetFullTableName() string {
+	// MongoDB doesn't have schemas, the full table name is the same as the table name.
+	return s.GetTableName()
+}
+
+func (s *SchemaEventPayload) GetSourceMetadata() (string, error) {
+	json, err := json.Marshal(s.Payload.Source)
+	if err != nil {
+		return "", err
+	}
+
+	return string(json), nil
 }
 
 func (s *SchemaEventPayload) GetOptionalSchema() (map[string]typing.KindDetails, error) {
@@ -153,7 +148,7 @@ func (s *SchemaEventPayload) GetData(tc kafkalib.TopicConfig) (map[string]any, e
 	var retMap map[string]any
 
 	switch s.Operation() {
-	case "d":
+	case constants.Delete:
 		// This is a delete event, so mark it as deleted.
 		// And we need to reconstruct the data bit since it will be empty.
 		// We _can_ rely on *before* since even without running replicate identity, it will still copy over
@@ -169,7 +164,7 @@ func (s *SchemaEventPayload) GetData(tc kafkalib.TopicConfig) (map[string]any, e
 		// If previous values for the other columns are in memory (not flushed yet), [TableData.InsertRow] will handle
 		// filling them in and setting this to false.
 		retMap[constants.OnlySetDeleteColumnMarker] = true
-	case "r", "u", "c":
+	case constants.Create, constants.Update, constants.Backfill:
 		retMap = s.Payload.afterMap
 		retMap[constants.DeleteColumnMarker] = false
 		retMap[constants.OnlySetDeleteColumnMarker] = false
