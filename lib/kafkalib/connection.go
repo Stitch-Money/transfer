@@ -30,7 +30,7 @@ type Connection struct {
 	disableTLS      bool
 	username        string
 	password        string
-  saslMechanism   string
+	saslMechanism   string
 
 	timeout time.Duration
 }

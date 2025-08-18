@@ -1,6 +1,8 @@
 package models
 
 import (
+	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -75,6 +77,19 @@ func (d *DatabaseData) GetOrCreateTableData(tableID cdc.TableID, topic string) *
 		}
 
 		d.tableData[tableID] = table
+	}
+
+	if d.tableData[tableID].topic != topic {
+		// not checking for this scenario can result in data corruption
+		slog.Error("cannot create memory table for given table id because topic does not correspond to existing topic",
+			slog.Any("existing topic", d.tableData[tableID].topic),
+			slog.Any("given topic", topic),
+			slog.Any("table id", tableID),
+		)
+		panic(fmt.Errorf("cannot create memory table for conflicting topic: existing '%s', given '%s'",
+			d.tableData[tableID].topic,
+			topic,
+		))
 	}
 
 	return d.tableData[tableID]
