@@ -42,6 +42,11 @@ func (m MultiStepMergeSettings) Validate() error {
 	return nil
 }
 
+type StaticColumn struct {
+	Name  string `yaml:"name"`
+	Value string `yaml:"value"`
+}
+
 type TopicConfig struct {
 	Database                   string `yaml:"db"`
 	TableName                  string `yaml:"tableName"`
@@ -65,9 +70,17 @@ type TopicConfig struct {
 	// [ColumnsToInclude] can be used to specify the exact columns that should be written to the destination.
 	ColumnsToInclude []string `yaml:"columnsToInclude,omitempty"`
 	// [ColumnsToExclude] can be used to exclude columns from being written to the destination.
-	ColumnsToExclude       []string                `yaml:"columnsToExclude,omitempty"`
-	PrimaryKeysOverride    []string                `yaml:"primaryKeysOverride,omitempty"`
+	ColumnsToExclude    []string `yaml:"columnsToExclude,omitempty"`
+	PrimaryKeysOverride []string `yaml:"primaryKeysOverride,omitempty"`
+
+	// [IncludePrimaryKeys] - This is used to specify an additional column that can be used as part of the primary key
+	// An example of this could be to include the full source table name.
+	IncludePrimaryKeys     []string                `yaml:"includePrimaryKeys,omitempty"`
 	MultiStepMergeSettings *MultiStepMergeSettings `yaml:"multiStepMergeSettings,omitempty"`
+
+	// [StaticColumns] can be used to specify static columns that should be written to the destination.
+	// This is useful for cases where you want to add additional columns to provide metadata, etc in the destination.
+	StaticColumns []StaticColumn `yaml:"staticColumns,omitempty"`
 
 	// Internal metadata
 	opsToSkipMap map[string]bool `yaml:"-"`
@@ -103,8 +116,8 @@ func (t TopicConfig) ShouldSkip(op string) bool {
 		panic("opsToSkipMap is nil, Load() was never called")
 	}
 
-	_, isOk := t.opsToSkipMap[op]
-	return isOk
+	_, ok := t.opsToSkipMap[op]
+	return ok
 }
 
 func (t TopicConfig) String() string {
@@ -140,6 +153,11 @@ func (t TopicConfig) Validate() error {
 	// You can't specify both [ColumnsToInclude] and [ColumnsToExclude]
 	if len(t.ColumnsToInclude) > 0 && len(t.ColumnsToExclude) > 0 {
 		return fmt.Errorf("cannot specify both columnsToInclude and columnsToExclude")
+	}
+
+	// You cannot have both [PrimaryKeysOverride] and [IncludePrimaryKeys]
+	if len(t.PrimaryKeysOverride) > 0 && len(t.IncludePrimaryKeys) > 0 {
+		return fmt.Errorf("cannot specify both primaryKeysOverride and includePrimaryKeys")
 	}
 
 	return nil

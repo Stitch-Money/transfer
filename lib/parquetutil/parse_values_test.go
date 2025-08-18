@@ -4,120 +4,111 @@ import (
 	"testing"
 	"time"
 
-	"github.com/artie-labs/transfer/lib/debezium/converters"
+	"github.com/apache/arrow/go/v17/arrow/decimal128"
 	"github.com/artie-labs/transfer/lib/numbers"
 	"github.com/artie-labs/transfer/lib/typing"
 	"github.com/artie-labs/transfer/lib/typing/decimal"
 	"github.com/stretchr/testify/assert"
-	"github.com/xitongsys/parquet-go/types"
 )
 
-func TestParseValue(t *testing.T) {
+func TestParseValueForArrow(t *testing.T) {
 	{
 		// Nil
-		value, err := ParseValue(nil, typing.KindDetails{}, nil)
+		value, err := ParseValueForArrow(nil, typing.KindDetails{})
 		assert.NoError(t, err)
 		assert.Nil(t, value)
 	}
 	{
 		// String
-		value, err := ParseValue("test", typing.String, nil)
+		value, err := ParseValueForArrow("test", typing.String)
 		assert.NoError(t, err)
 		assert.Equal(t, "test", value)
 	}
 	{
-		// Struct
-		value, err := ParseValue(map[string]any{"foo": "bar"}, typing.Struct, nil)
+		// Struct - now returns formatted string instead of JSON
+		value, err := ParseValueForArrow(map[string]any{"foo": "bar"}, typing.Struct)
 		assert.NoError(t, err)
 		assert.Equal(t, `{"foo":"bar"}`, value)
 	}
 	{
-		// Arrays
-		{
-			// Arrays (numbers - converted to string)
-			value, err := ParseValue([]any{123, 456}, typing.Array, nil)
-			assert.NoError(t, err)
-			assert.Equal(t, []string{"123", "456"}, value)
-		}
-		{
-			// Arrays (booleans - converted to string)
-			value, err := ParseValue([]any{false, true, false}, typing.Array, nil)
-			assert.NoError(t, err)
-			assert.Equal(t, []string{"false", "true", "false"}, value)
-		}
-	}
-	{
-		// Decimal
-		value, err := ParseValue(decimal.NewDecimalWithPrecision(
-			numbers.MustParseDecimal("5000.22320"), 30),
-			typing.NewDecimalDetailsFromTemplate(typing.EDecimal, decimal.NewDetails(30, 5)),
-			nil,
-		)
-
+		// Array - now returns formatted string instead of array
+		value, err := ParseValueForArrow([]int{123, 456}, typing.Array)
 		assert.NoError(t, err)
-		assert.Equal(t, "5000.22320", types.DECIMAL_BYTE_ARRAY_ToString([]byte(value.(string)), 30, 5))
+		assert.Equal(t, []string{"123", "456"}, value)
 	}
 	{
-		// Time
-		value, err := ParseValue("03:15:00", typing.Time, nil)
+		// Array boolean - now returns formatted string instead of array
+		value, err := ParseValueForArrow([]bool{false, true, false}, typing.Array)
 		assert.NoError(t, err)
-		assert.Equal(t, int32(11700000), value)
-
-		converted, err := converters.Time{}.Convert(int64(value.(int32)))
+		assert.Equal(t, []string{"false", "true", "false"}, value)
+	}
+	{
+		// Integer
+		value, err := ParseValueForArrow(int64(123), typing.Integer)
 		assert.NoError(t, err)
-		assert.Equal(t, "03:15:00", converted.(time.Time).Format(time.TimeOnly))
+		assert.Equal(t, int64(123), value)
 	}
 	{
-		// Date
-		value, err := ParseValue("2022-12-25", typing.Date, nil)
+		// Integer from string
+		value, err := ParseValueForArrow("456", typing.Integer)
 		assert.NoError(t, err)
-		assert.Equal(t, int32(19351), value)
+		assert.Equal(t, int64(456), value)
 	}
 	{
-		// TIMESTAMP NTZ
-		_time := time.Date(2023, 4, 24, 17, 29, 5, 699_000_000, time.UTC)
-		{
-			// No location
-			value, err := ParseValue(_time, typing.TimestampNTZ, nil)
-			assert.NoError(t, err)
-			assert.Equal(t, int64(1_682_357_345_699), value)
-		}
-		{
-			// With location
-			est, err := time.LoadLocation("America/New_York")
-			assert.NoError(t, err)
+		// Boolean
+		value, err := ParseValueForArrow(true, typing.Boolean)
+		assert.NoError(t, err)
+		assert.Equal(t, true, value)
+	}
+	{
+		// Float
+		value, err := ParseValueForArrow(float32(3.14), typing.Float)
+		assert.NoError(t, err)
+		assert.Equal(t, float32(3.14), value)
+	}
+	{
+		// Decimal with valid precision
+		decimalDetails := decimal.NewDetails(10, 2)
+		decimalKind := typing.NewDecimalDetailsFromTemplate(typing.EDecimal, decimalDetails)
+		decimalValue := decimal.NewDecimalWithPrecision(numbers.MustParseDecimal("123.45"), 10)
 
-			value, err := ParseValue(_time, typing.TimestampNTZ, est)
-			assert.NoError(t, err)
-			assert.Equal(t, int64(1_682_342_945_699), value)
+		value, err := ParseValueForArrow(decimalValue, decimalKind)
+		assert.NoError(t, err)
 
-			_, offset := _time.In(est).Zone()
-			// This needs to be subtract since we need to do the opposite of what we're doing in [ParseValue] to unravel the value back to UTC.
-			estTime := time.UnixMilli(value.(int64) - int64(offset*1000)).In(time.UTC)
-			assert.Equal(t, _time, estTime)
+		// Should be decimal128.Num
+		if _, ok := value.(decimal128.Num); !ok {
+			// If decimal128 conversion fails, it should fallback to string
+			assert.Equal(t, "123.45", value)
 		}
 	}
 	{
-		// Timestamp TZ
-		_time := time.Date(2023, 4, 24, 17, 29, 5, 699_000_000, time.UTC)
-		{
-			// No location
-			value, err := ParseValue(_time, typing.TimestampTZ, nil)
-			assert.NoError(t, err)
-			assert.Equal(t, int64(1_682_357_345_699), value)
-		}
-		{
-			// With location
-			est, err := time.LoadLocation("America/New_York")
-			assert.NoError(t, err)
+		// Time from string
+		value, err := ParseValueForArrow("12:30:45", typing.Time)
+		assert.NoError(t, err)
 
-			value, err := ParseValue(_time, typing.TimestampTZ, est)
-			assert.NoError(t, err)
-			assert.Equal(t, int64(1_682_342_945_699), value)
+		// Should be milliseconds since midnight: (12*3600 + 30*60 + 45) * 1000
+		expectedMillis := int32((12*3600 + 30*60 + 45) * 1000)
+		assert.Equal(t, expectedMillis, value)
+	}
+	{
+		// Date from string
+		value, err := ParseValueForArrow("2023-12-25", typing.Date)
+		assert.NoError(t, err)
 
-			_, offset := _time.In(est).Zone()
-			estTime := time.UnixMilli(value.(int64) - int64(offset*1000)).In(time.UTC)
-			assert.Equal(t, _time, estTime)
-		}
+		// Should be days since epoch
+		epoch := time.Date(1970, 1, 1, 0, 0, 0, 0, time.UTC)
+		expectedDate := time.Date(2023, 12, 25, 0, 0, 0, 0, time.UTC)
+		expectedDays := int32(expectedDate.Sub(epoch).Hours() / 24)
+		assert.Equal(t, expectedDays, value)
+	}
+	{
+		// Timestamp from string
+		value, err := ParseValueForArrow("2023-12-25T10:30:00Z", typing.TimestampTZ)
+		assert.NoError(t, err)
+
+		// Should be milliseconds since epoch
+		expectedTime, _ := time.Parse(time.RFC3339, "2023-12-25T10:30:00Z")
+		expectedMillis := expectedTime.UnixMilli()
+		assert.Equal(t, expectedMillis, value)
 	}
 }

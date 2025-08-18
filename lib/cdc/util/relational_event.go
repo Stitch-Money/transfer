@@ -19,10 +19,10 @@ type SchemaEventPayload struct {
 }
 
 type Payload struct {
-	Before    map[string]any `json:"before"`
-	After     map[string]any `json:"after"`
-	Source    Source         `json:"source"`
-	Operation string         `json:"op"`
+	Before    map[string]any      `json:"before"`
+	After     map[string]any      `json:"after"`
+	Source    Source              `json:"source"`
+	Operation constants.Operation `json:"op"`
 }
 
 type Source struct {
@@ -81,12 +81,12 @@ func (s *SchemaEventPayload) GetColumns() (*columns.Columns, error) {
 	return &cols, nil
 }
 
-func (s *SchemaEventPayload) Operation() string {
+func (s *SchemaEventPayload) Operation() constants.Operation {
 	return s.Payload.Operation
 }
 
 func (s *SchemaEventPayload) DeletePayload() bool {
-	return s.Payload.Operation == "d"
+	return s.Payload.Operation == constants.Delete
 }
 
 func (s *SchemaEventPayload) GetExecutionTime() time.Time {
@@ -98,11 +98,17 @@ func (s *SchemaEventPayload) GetTableName() string {
 }
 
 func (s *SchemaEventPayload) GetFullTableName() string {
+	fullTableName := s.Payload.Source.Table
+
 	if s.Payload.Source.Schema != "" {
-		return s.Payload.Source.Schema + "." + s.Payload.Source.Table
+		fullTableName = s.Payload.Source.Schema + "." + fullTableName
 	}
 
-	return s.Payload.Source.Table
+	if s.Payload.Source.Database != "" {
+		fullTableName = s.Payload.Source.Database + "." + fullTableName
+	}
+
+	return fullTableName
 }
 
 func (s *SchemaEventPayload) GetSourceMetadata() (string, error) {
@@ -118,7 +124,7 @@ func (s *SchemaEventPayload) GetData(tc kafkalib.TopicConfig) (map[string]any, e
 	var err error
 	var retMap map[string]any
 	switch s.Operation() {
-	case "d":
+	case constants.Delete:
 		if len(s.Payload.Before) > 0 {
 			retMap, err = s.parseAndMutateMapInPlace(s.Payload.Before, debezium.Before)
 			if err != nil {
@@ -136,7 +142,7 @@ func (s *SchemaEventPayload) GetData(tc kafkalib.TopicConfig) (map[string]any, e
 		// If previous values for the other columns are in memory (not flushed yet), [TableData.InsertRow] will handle
 		// filling them in and setting this to false.
 		retMap[constants.OnlySetDeleteColumnMarker] = true
-	case "r", "u", "c":
+	case constants.Create, constants.Update, constants.Backfill:
 		retMap, err = s.parseAndMutateMapInPlace(s.Payload.After, debezium.After)
 		if err != nil {
 			return nil, err
@@ -164,16 +170,17 @@ func (s *SchemaEventPayload) GetData(tc kafkalib.TopicConfig) (map[string]any, e
 func (s *SchemaEventPayload) parseAndMutateMapInPlace(retMap map[string]any, kind debezium.FieldLabelKind) (map[string]any, error) {
 	if schemaObject := s.Schema.GetSchemaFromLabel(kind); schemaObject != nil {
 		for _, field := range schemaObject.Fields {
-			fieldVal, isOk := retMap[field.FieldName]
-			if !isOk {
+			fieldVal, ok := retMap[field.FieldName]
+			if !ok {
 				continue
 			}
 
-			if val, parseErr := field.ParseValue(fieldVal); parseErr == nil {
-				retMap[field.FieldName] = val
-			} else {
-				return nil, fmt.Errorf("failed to parse field %q: %w", field.FieldName, parseErr)
+			value, err := field.ParseValue(fieldVal)
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse field %q: %w", field.FieldName, err)
 			}
+
+			retMap[field.FieldName] = value
 		}
 	}
 

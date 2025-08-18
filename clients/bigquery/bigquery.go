@@ -1,6 +1,7 @@
 package bigquery
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"log/slog"
@@ -30,20 +31,19 @@ import (
 	"github.com/artie-labs/transfer/lib/typing"
 )
 
-const (
-	GooglePathToCredentialsEnvKey = "GOOGLE_APPLICATION_CREDENTIALS"
-	// Storage Write API is limited to 10 MiB, subtract 400 KiB to account for request overhead.
-	maxRequestByteSize = (10 * 1024 * 1024) - (400 * 1024)
-)
+const GooglePathToCredentialsEnvKey = "GOOGLE_APPLICATION_CREDENTIALS"
 
 type Store struct {
-	// If [auditRows] is enabled, we will perform an additional query to ensure that the number of rows in the temporary table matches the expected number of rows.
-	auditRows bool
-	configMap *types.DestinationTableConfigMap
-	config    config.Config
-	bqClient  *bigquery.Client
+	maxRequestBytesSize int
+	configMap           *types.DestinationTableConfigMap
+	config              config.Config
+	bqClient            *bigquery.Client
 
 	db.Store
+}
+
+func (s Store) GetConfig() config.Config {
+	return s.config
 }
 
 func (s *Store) DropTable(ctx context.Context, tableID sql.TableIdentifier) error {
@@ -122,7 +122,7 @@ func (s *Store) IdentifierFor(databaseAndSchema kafkalib.DatabaseAndSchemaPair, 
 	return dialect.NewTableIdentifier(s.config.BigQuery.ProjectID, databaseAndSchema.Database, table)
 }
 
-func (s *Store) GetTableConfig(tableID sql.TableIdentifier, dropDeletedColumns bool) (*types.DestinationTableConfig, error) {
+func (s *Store) GetTableConfig(ctx context.Context, tableID sql.TableIdentifier, dropDeletedColumns bool) (*types.DestinationTableConfig, error) {
 	return shared.GetTableCfgArgs{
 		Destination:           s,
 		TableID:               tableID,
@@ -131,7 +131,7 @@ func (s *Store) GetTableConfig(tableID sql.TableIdentifier, dropDeletedColumns b
 		ColumnNameForDataType: "data_type",
 		ColumnNameForComment:  "description",
 		DropDeletedColumns:    dropDeletedColumns,
-	}.GetTableConfig()
+	}.GetTableConfig(ctx)
 }
 
 func (s *Store) GetConfigMap() *types.DestinationTableConfigMap {
@@ -187,8 +187,8 @@ func (s *Store) putTable(ctx context.Context, bqTableID dialect.TableIdentifier,
 	}
 	defer managedStream.Close()
 
-	encoder := func(row map[string]any) ([]byte, error) {
-		message, err := rowToMessage(row, columns, *messageDescriptor)
+	encoder := func(row optimization.Row) ([]byte, error) {
+		message, err := rowToMessage(row.GetData(), columns, *messageDescriptor)
 		if err != nil {
 			return nil, fmt.Errorf("failed to convert row to message: %w", err)
 		}
@@ -201,7 +201,7 @@ func (s *Store) putTable(ctx context.Context, bqTableID dialect.TableIdentifier,
 		return bytes, nil
 	}
 
-	err = batch.BySize(tableData.Rows(), maxRequestByteSize, false, encoder, func(chunk [][]byte, _ []map[string]any) error {
+	err = batch.BySize(tableData.Rows(), s.maxRequestBytesSize, false, encoder, func(chunk [][]byte, _ []optimization.Row) error {
 		result, err := managedStream.AppendRows(ctx, chunk)
 		if err != nil {
 			return fmt.Errorf("failed to append rows: %w", err)
@@ -265,7 +265,11 @@ func (s *Store) Dedupe(ctx context.Context, tableID sql.TableIdentifier, primary
 
 	defer func() { _ = ddl.DropTemporaryTable(ctx, s, stagingTableID, false) }()
 
-	return destination.ExecContextStatements(ctx, s, dedupeQueries)
+	if _, err := destination.ExecContextStatements(ctx, s, dedupeQueries); err != nil {
+		return fmt.Errorf("failed to dedupe: %w", err)
+	}
+
+	return nil
 }
 
 func (s *Store) SweepTemporaryTables(_ context.Context) error {
@@ -304,19 +308,20 @@ func LoadBigQuery(ctx context.Context, cfg config.Config, _store *db.Store) (*St
 		return nil, err
 	}
 
-	var auditRows bool
-	if val := os.Getenv("BQ_AUDIT_ROWS"); val != "" {
-		auditRows, err = strconv.ParseBool(val)
-		if err != nil {
-			logger.Panic("Failed to parse BQ_AUDIT_ROWS", slog.Any("err", err))
-		}
+	// We'll default to 400 kb offset. You can override this behavior by setting [BIGQUERY_STORAGE_WRITE_OFFSET_KB]
+	offset, err := strconv.Atoi(cmp.Or(os.Getenv("BIGQUERY_STORAGE_WRITE_OFFSET_KB"), "400"))
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert offset to int: %w", err)
 	}
 
+	slog.Info("Loaded BigQuery storage write offset", slog.Int("offset kb", offset))
+	// Storage Write API is limited to 10 MiB, subtract 400 KiB to account for request overhead.
+	maxRequestByteSize := (10 * 1024 * 1024) - (offset * 1024)
 	return &Store{
-		bqClient:  bqClient,
-		auditRows: auditRows,
-		configMap: &types.DestinationTableConfigMap{},
-		config:    cfg,
-		Store:     store,
+		bqClient:            bqClient,
+		configMap:           &types.DestinationTableConfigMap{},
+		config:              cfg,
+		Store:               store,
+		maxRequestBytesSize: maxRequestByteSize,
 	}, nil
 }

@@ -30,6 +30,10 @@ type Store struct {
 	configMap *types.DestinationTableConfigMap
 }
 
+func (s Store) GetConfig() config.Config {
+	return s.cfg
+}
+
 func (s Store) DropTable(ctx context.Context, tableID sql.TableIdentifier) error {
 	if !tableID.AllowToDrop() {
 		return fmt.Errorf("table %q is not allowed to be dropped", tableID.FullyQualifiedName())
@@ -85,7 +89,7 @@ func (s Store) Dedupe(ctx context.Context, tableID sql.TableIdentifier, primaryK
 	return nil
 }
 
-func (s Store) GetTableConfig(tableID sql.TableIdentifier, dropDeletedColumns bool) (*types.DestinationTableConfig, error) {
+func (s Store) GetTableConfig(ctx context.Context, tableID sql.TableIdentifier, dropDeletedColumns bool) (*types.DestinationTableConfig, error) {
 	return shared.GetTableCfgArgs{
 		Destination:           s,
 		TableID:               tableID,
@@ -94,7 +98,7 @@ func (s Store) GetTableConfig(tableID sql.TableIdentifier, dropDeletedColumns bo
 		ColumnNameForDataType: "data_type",
 		ColumnNameForComment:  "comment",
 		DropDeletedColumns:    dropDeletedColumns,
-	}.GetTableConfig()
+	}.GetTableConfig(ctx)
 }
 
 func (s Store) PrepareTemporaryTable(ctx context.Context, tableData *optimization.TableData, dwh *types.DestinationTableConfig, tempTableID sql.TableIdentifier, _ sql.TableIdentifier, opts types.AdditionalSettings, createTempTable bool) error {
@@ -104,8 +108,8 @@ func (s Store) PrepareTemporaryTable(ctx context.Context, tableData *optimizatio
 		}
 	}
 
-	castedTempTableID, isOk := tempTableID.(dialect.TableIdentifier)
-	if !isOk {
+	castedTempTableID, ok := tempTableID.(dialect.TableIdentifier)
+	if !ok {
 		return fmt.Errorf("failed to cast temp table ID to TableIdentifier")
 	}
 
@@ -192,11 +196,7 @@ func (s Store) writeTemporaryTableFile(tableData *optimization.TableData, fileNa
 }
 
 func (s Store) SweepTemporaryTables(ctx context.Context) error {
-	tcs, err := s.cfg.TopicConfigs()
-	if err != nil {
-		return err
-	}
-
+	tcs := s.cfg.TopicConfigs()
 	ctx = driverctx.NewContextWithStagingInfo(ctx, []string{"/var", "tmp"})
 	// Remove the temporary files from volumes
 	for _, tc := range tcs {

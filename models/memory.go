@@ -4,6 +4,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/artie-labs/transfer/lib/cdc"
 	"github.com/artie-labs/transfer/lib/optimization"
 )
 
@@ -11,9 +12,15 @@ import (
 // The wrapper here is just to have a mutex. Any of the ptr methods on *TableData will require callers to use their own locks.
 // We did this because certain operations require different locking patterns
 type TableData struct {
+	topic   string
+	tableID cdc.TableID
 	*optimization.TableData
 	lastFlushTime time.Time
 	sync.Mutex
+}
+
+func (t *TableData) GetTableID() cdc.TableID {
+	return t.tableID
 }
 
 func (t *TableData) Wipe() {
@@ -45,38 +52,53 @@ func (t *TableData) SetTableData(td *optimization.TableData) {
 }
 
 type DatabaseData struct {
-	tableData map[string]*TableData
+	tableData map[cdc.TableID]*TableData
 	sync.RWMutex
 }
 
 func NewMemoryDB() *DatabaseData {
-	tableData := make(map[string]*TableData)
+	tableData := make(map[cdc.TableID]*TableData)
 	return &DatabaseData{
 		tableData: tableData,
 	}
 }
 
-func (d *DatabaseData) GetOrCreateTableData(tableName string) *TableData {
+func (d *DatabaseData) GetOrCreateTableData(tableID cdc.TableID, topic string) *TableData {
 	d.Lock()
 	defer d.Unlock()
 
-	table, exists := d.tableData[tableName]
-	if !exists {
-		table = &TableData{
-			Mutex: sync.Mutex{},
+	if _, ok := d.tableData[tableID]; !ok {
+		table := &TableData{
+			Mutex:   sync.Mutex{},
+			topic:   topic,
+			tableID: tableID,
 		}
-		d.tableData[tableName] = table
+
+		d.tableData[tableID] = table
 	}
 
-	return table
+	return d.tableData[tableID]
 }
 
-func (d *DatabaseData) ClearTableConfig(tableName string) {
+func (d *DatabaseData) ClearTableConfig(tableID cdc.TableID) {
 	d.Lock()
 	defer d.Unlock()
-	d.tableData[tableName].Wipe()
+	d.tableData[tableID].Wipe()
 }
 
-func (d *DatabaseData) TableData() map[string]*TableData {
+func (d *DatabaseData) TableData() map[cdc.TableID]*TableData {
 	return d.tableData
+}
+
+func (d *DatabaseData) GetTopicToTables() map[string][]*TableData {
+	out := make(map[string][]*TableData)
+	for _, v := range d.tableData {
+		if _, ok := out[v.topic]; !ok {
+			out[v.topic] = make([]*TableData, 0)
+		}
+
+		out[v.topic] = append(out[v.topic], v)
+	}
+
+	return out
 }

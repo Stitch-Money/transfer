@@ -53,6 +53,8 @@ type GetSessionResponse struct {
 	ID    int          `json:"id"`
 	State SessionState `json:"state"`
 	Kind  string       `json:"kind"`
+	Name  string       `json:"name"`
+	Logs  []string     `json:"log"` // limited by Livy to last 10 lines
 }
 
 func (g GetSessionResponse) TerminalState() bool {
@@ -66,6 +68,7 @@ type CreateSessionRequest struct {
 	HeartbeatTimeoutInSecond int            `json:"heartbeatTimeoutInSecond,omitempty"`
 	DriverMemory             string         `json:"driverMemory,omitempty"`
 	ExecutorMemory           string         `json:"executorMemory,omitempty"`
+	Name                     string         `json:"name,omitempty"`
 }
 
 type CreateSessionResponse struct {

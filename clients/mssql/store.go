@@ -23,6 +23,10 @@ type Store struct {
 	db.Store
 }
 
+func (s Store) GetConfig() config.Config {
+	return s.config
+}
+
 func getSchema(schema string) string {
 	// MSSQL has their default schema called `dbo`, `public` is a reserved keyword.
 	if strings.ToLower(schema) == "public" {
@@ -77,19 +81,14 @@ func (s *Store) IdentifierFor(databaseAndSchema kafkalib.DatabaseAndSchemaPair, 
 }
 
 func (s *Store) SweepTemporaryTables(ctx context.Context) error {
-	tcs, err := s.config.TopicConfigs()
-	if err != nil {
-		return err
-	}
-
-	return shared.Sweep(ctx, s, tcs, s.dialect().BuildSweepQuery)
+	return shared.Sweep(ctx, s, s.config.TopicConfigs(), s.dialect().BuildSweepQuery)
 }
 
 func (s *Store) Dedupe(_ context.Context, _ sql.TableIdentifier, _ []string, _ bool) error {
 	return nil // dedupe is not necessary for MS SQL
 }
 
-func (s *Store) GetTableConfig(tableID sql.TableIdentifier, dropDeletedColumns bool) (*types.DestinationTableConfig, error) {
+func (s *Store) GetTableConfig(ctx context.Context, tableID sql.TableIdentifier, dropDeletedColumns bool) (*types.DestinationTableConfig, error) {
 	return shared.GetTableCfgArgs{
 		Destination:           s,
 		TableID:               tableID,
@@ -98,7 +97,7 @@ func (s *Store) GetTableConfig(tableID sql.TableIdentifier, dropDeletedColumns b
 		ColumnNameForDataType: "data_type",
 		ColumnNameForComment:  "description",
 		DropDeletedColumns:    dropDeletedColumns,
-	}.GetTableConfig()
+	}.GetTableConfig(ctx)
 }
 
 func LoadStore(cfg config.Config) (*Store, error) {

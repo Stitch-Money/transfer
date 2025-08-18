@@ -39,7 +39,7 @@ func (s *SnowflakeTestSuite) TestMutateColumnsWithMemoryCacheDeletions() {
 	assert.Equal(s.T(), len(s.stageStore.configMap.GetTableConfig(tableID).ReadOnlyColumnsToDelete()), 1)
 
 	// Now let's try to add this column back, it should delete it from the cache.
-	tc.MutateInMemoryColumns(constants.Add, nameCol)
+	tc.MutateInMemoryColumns(constants.AddColumn, nameCol)
 	assert.Equal(s.T(), len(s.stageStore.configMap.GetTableConfig(tableID).ReadOnlyColumnsToDelete()), 0)
 }
 
@@ -110,7 +110,7 @@ func (s *SnowflakeTestSuite) TestGetTableConfig() {
 	tableData := optimization.NewTableData(nil, config.Replication, nil, kafkalib.TopicConfig{Database: "customers", Schema: "public", TableName: "orders22"}, "foo")
 	s.mockDB.ExpectQuery(`DESC TABLE "CUSTOMERS"."PUBLIC"."FOO"`).WillReturnError(fmt.Errorf("Table '%s' does not exist or not authorized", fqName))
 
-	tableConfig, err := s.stageStore.GetTableConfig(s.identifierFor(tableData), tableData.TopicConfig().DropDeletedColumns)
+	tableConfig, err := s.stageStore.GetTableConfig(s.T().Context(), s.identifierFor(tableData), tableData.TopicConfig().DropDeletedColumns)
 	assert.NotNil(s.T(), tableConfig, "config is nil")
 	assert.NoError(s.T(), err)
 

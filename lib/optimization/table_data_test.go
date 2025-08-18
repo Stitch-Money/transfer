@@ -35,8 +35,8 @@ func TestTableData_ReadOnlyInMemoryCols(t *testing.T) {
 	readOnlyCols.AddColumn(columns.NewColumn("last_name", typing.String))
 
 	// Check if last_name actually exists.
-	_, isOk := td.ReadOnlyInMemoryCols().GetColumn("last_name")
-	assert.False(t, isOk)
+	_, ok := td.ReadOnlyInMemoryCols().GetColumn("last_name")
+	assert.False(t, ok)
 
 	// Check length is 1.
 	assert.Equal(t, 1, len(td.ReadOnlyInMemoryCols().GetColumns()))
@@ -65,19 +65,19 @@ func TestTableData_UpdateInMemoryColumns(t *testing.T) {
 	}
 
 	// It's saved back in the original format.
-	_, isOk := tableData.ReadOnlyInMemoryCols().GetColumn("foo")
-	assert.False(t, isOk)
+	_, ok := tableData.ReadOnlyInMemoryCols().GetColumn("foo")
+	assert.False(t, ok)
 
-	_, isOk = tableData.ReadOnlyInMemoryCols().GetColumn("FOO")
-	assert.True(t, isOk)
+	_, ok = tableData.ReadOnlyInMemoryCols().GetColumn("FOO")
+	assert.True(t, ok)
 
-	col, isOk := tableData.ReadOnlyInMemoryCols().GetColumn("CHANGE_me")
-	assert.True(t, isOk)
+	col, ok := tableData.ReadOnlyInMemoryCols().GetColumn("CHANGE_me")
+	assert.True(t, ok)
 	assert.Equal(t, typing.TimestampTZ, col.KindDetails)
 
 	// It went from invalid to boolean.
-	col, isOk = tableData.ReadOnlyInMemoryCols().GetColumn("bar")
-	assert.True(t, isOk)
+	col, ok = tableData.ReadOnlyInMemoryCols().GetColumn("bar")
+	assert.True(t, ok)
 	assert.Equal(t, typing.Boolean, col.KindDetails)
 }
 
@@ -188,38 +188,36 @@ func TestTableData_InsertRowSoftDelete(t *testing.T) {
 
 	td.InsertRow("123", map[string]any{"id": "123", "name": "dana", constants.DeleteColumnMarker: false, constants.OnlySetDeleteColumnMarker: false}, false)
 	assert.Equal(t, 1, int(td.NumberOfRows()))
-	assert.Equal(t, "dana", td.Rows()[0]["name"])
+	assert.Equal(t, "dana", td.Rows()[0].GetData()["name"])
 
 	td.InsertRow("123", map[string]any{"id": "123", "name": "dana2", constants.DeleteColumnMarker: false, constants.OnlySetDeleteColumnMarker: false}, false)
 	assert.Equal(t, 1, int(td.NumberOfRows()))
-	assert.Equal(t, "dana2", td.Rows()[0]["name"])
+	assert.Equal(t, "dana2", td.Rows()[0].GetData()["name"])
 
 	td.InsertRow("123", map[string]any{"id": "123", constants.DeleteColumnMarker: true, constants.OnlySetDeleteColumnMarker: true}, true)
 	assert.Equal(t, 1, int(td.NumberOfRows()))
 	// The previous value should be preserved, along with the delete marker
-	assert.Equal(t, "dana2", td.Rows()[0]["name"])
-	assert.Equal(t, true, td.Rows()[0][constants.DeleteColumnMarker])
+	assert.Equal(t, "dana2", td.Rows()[0].GetData()["name"])
+	assert.Equal(t, true, td.Rows()[0].GetData()[constants.DeleteColumnMarker])
 	// OnlySetDeleteColumnMarker should be false because we want to set the previously received values that haven't been flushed yet
-	assert.Equal(t, false, td.Rows()[0][constants.OnlySetDeleteColumnMarker])
+	assert.Equal(t, false, td.Rows()[0].GetData()[constants.OnlySetDeleteColumnMarker])
 
 	// Ensure two deletes in a row are handled idempotently (in case the delete event is sent twice)
 	td.InsertRow("123", map[string]any{"id": "123", constants.DeleteColumnMarker: true, constants.OnlySetDeleteColumnMarker: true}, true)
 	assert.Equal(t, 1, int(td.NumberOfRows()))
-	assert.Equal(t, "dana2", td.Rows()[0]["name"])
-	assert.Equal(t, true, td.Rows()[0][constants.DeleteColumnMarker])
-	assert.Equal(t, false, td.Rows()[0][constants.OnlySetDeleteColumnMarker])
-
+	assert.Equal(t, "dana2", td.Rows()[0].GetData()["name"])
+	assert.Equal(t, true, td.Rows()[0].GetData()[constants.DeleteColumnMarker])
+	assert.Equal(t, false, td.Rows()[0].GetData()[constants.OnlySetDeleteColumnMarker])
 	{
 		// If deleting a row we don't have in memory, OnlySetDeleteColumnMarker should stay true
 		td := NewTableData(nil, config.Replication, nil, kafkalib.TopicConfig{SoftDelete: true}, "foo")
 		assert.Equal(t, 0, int(td.NumberOfRows()))
 		td.InsertRow("123", map[string]any{"id": "123", constants.DeleteColumnMarker: true, constants.OnlySetDeleteColumnMarker: true}, true)
-		assert.Equal(t, true, td.Rows()[0][constants.OnlySetDeleteColumnMarker])
+		assert.Equal(t, true, td.Rows()[0].GetData()[constants.OnlySetDeleteColumnMarker])
 		// Two deletes in a row; OnlySetDeleteColumnMarker should still be true because we don't have the other values in memory
 		td.InsertRow("123", map[string]any{"id": "123", constants.DeleteColumnMarker: true, constants.OnlySetDeleteColumnMarker: true}, true)
-		assert.Equal(t, true, td.Rows()[0][constants.OnlySetDeleteColumnMarker])
+		assert.Equal(t, true, td.Rows()[0].GetData()[constants.OnlySetDeleteColumnMarker])
 	}
-
 	{
 		// If a row is created and deleted, then another row with the same primary key is created, the previous values should not be used
 		td := NewTableData(nil, config.Replication, nil, kafkalib.TopicConfig{SoftDelete: true}, "foo")
@@ -227,9 +225,43 @@ func TestTableData_InsertRowSoftDelete(t *testing.T) {
 		td.InsertRow("123", map[string]any{"id": "123", "name": "dana", "foo": "abc", constants.DeleteColumnMarker: false, constants.OnlySetDeleteColumnMarker: false}, false)
 		td.InsertRow("123", map[string]any{"id": "123", constants.DeleteColumnMarker: true, constants.OnlySetDeleteColumnMarker: true}, true)
 		td.InsertRow("123", map[string]any{"id": "123", "name": "dana-new", constants.DeleteColumnMarker: false, constants.OnlySetDeleteColumnMarker: false}, false)
-		assert.Equal(t, "dana-new", td.Rows()[0]["name"])
-		assert.Nil(t, td.Rows()[0]["foo"])
-		assert.Equal(t, false, td.Rows()[0][constants.DeleteColumnMarker])
+		assert.Equal(t, "dana-new", td.Rows()[0].GetData()["name"])
+		assert.Nil(t, td.Rows()[0].GetData()["foo"])
+		assert.Equal(t, false, td.Rows()[0].GetData()[constants.DeleteColumnMarker])
+	}
+	{
+		// Update followed by a delete
+		{
+			// Let's update a row and then delete it and inspect the operation.
+			td := NewTableData(nil, config.Replication, nil, kafkalib.TopicConfig{SoftDelete: true}, "foo")
+			assert.Equal(t, 0, int(td.NumberOfRows()))
+			td.InsertRow("123", map[string]any{"id": "123", "name": "dana", "foo": "abc", constants.DeleteColumnMarker: false, constants.OnlySetDeleteColumnMarker: false, constants.OperationColumnMarker: "u"}, false)
+			td.InsertRow("123", map[string]any{"id": "123", constants.DeleteColumnMarker: true, constants.OnlySetDeleteColumnMarker: true, constants.OperationColumnMarker: "d"}, true)
+			assert.Equal(t, 1, int(td.NumberOfRows()))
+
+			data := td.Rows()[0].GetData()
+			assert.Equal(t, "dana", data["name"])
+			assert.Equal(t, "abc", data["foo"])
+			assert.Equal(t, "d", data[constants.OperationColumnMarker])
+			assert.True(t, data[constants.DeleteColumnMarker].(bool))
+			assert.False(t, data[constants.OnlySetDeleteColumnMarker].(bool))
+		}
+		{
+			// Another scenario, it should not overwrite the previous database timestamp
+			td := NewTableData(nil, config.Replication, nil, kafkalib.TopicConfig{SoftDelete: true}, "foo")
+			assert.Equal(t, 0, int(td.NumberOfRows()))
+			td.InsertRow("123", map[string]any{"id": "123", "name": "dana", "foo": "abc", constants.DeleteColumnMarker: false, constants.OnlySetDeleteColumnMarker: false, constants.OperationColumnMarker: "u", constants.DatabaseUpdatedColumnMarker: "a"}, false)
+			td.InsertRow("123", map[string]any{"id": "123", constants.DeleteColumnMarker: true, constants.OnlySetDeleteColumnMarker: true, constants.OperationColumnMarker: "d", constants.DatabaseUpdatedColumnMarker: "b"}, true)
+			assert.Equal(t, 1, int(td.NumberOfRows()))
+
+			data := td.Rows()[0].GetData()
+			assert.Equal(t, "dana", data["name"])
+			assert.Equal(t, "abc", data["foo"])
+			assert.Equal(t, "b", data[constants.DatabaseUpdatedColumnMarker])
+			assert.Equal(t, "d", data[constants.OperationColumnMarker])
+			assert.True(t, data[constants.DeleteColumnMarker].(bool))
+			assert.False(t, data[constants.OnlySetDeleteColumnMarker].(bool))
+		}
 	}
 }
 

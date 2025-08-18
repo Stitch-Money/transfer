@@ -5,6 +5,10 @@ import (
 )
 
 const (
+	// Environment variables:
+	// [KafkaHWMEnvVar] - If set, we will have an additional Kafka high watermark check to prevent duplicate messages.
+	KafkaHWMEnvVar = "KAFKA_HWM"
+
 	NullValuePlaceholder             = "__artie_null_value"
 	ToastUnavailableValuePlaceholder = "__debezium_unavailable_value"
 
@@ -66,8 +70,8 @@ const Datadog ExporterKind = "datadog"
 type ColumnOperation string
 
 const (
-	Add    ColumnOperation = "add"
-	Delete ColumnOperation = "drop"
+	AddColumn  ColumnOperation = "add"
+	DropColumn ColumnOperation = "drop"
 )
 
 type QueueKind string
@@ -84,6 +88,7 @@ const (
 	BigQuery   DestinationKind = "bigquery"
 	Databricks DestinationKind = "databricks"
 	MSSQL      DestinationKind = "mssql"
+	Postgres   DestinationKind = "postgres"
 	Redshift   DestinationKind = "redshift"
 	S3         DestinationKind = "s3"
 	Snowflake  DestinationKind = "snowflake"
@@ -98,6 +103,7 @@ var ValidDestinations = []DestinationKind{
 	S3,
 	Snowflake,
 	Iceberg,
+	Postgres,
 }
 
 func IsValidDestination(destination DestinationKind) bool {
@@ -127,4 +133,13 @@ type TableAlias string
 const (
 	StagingAlias TableAlias = "stg"
 	TargetAlias  TableAlias = "tgt"
+)
+
+type Operation string
+
+const (
+	Create   Operation = "c"
+	Update   Operation = "u"
+	Delete   Operation = "d"
+	Backfill Operation = "r"
 )

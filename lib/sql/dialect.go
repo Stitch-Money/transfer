@@ -14,6 +14,7 @@ const (
 	Backfill DefaultValueStrategy = iota
 	// Native - set default values directly into the destination
 	Native
+	NotImplemented
 )
 
 type TableIdentifier interface {
@@ -28,8 +29,9 @@ type TableIdentifier interface {
 type Dialect interface {
 	QuoteIdentifier(identifier string) string
 	EscapeStruct(value string) string
-	DataTypeForKind(kd typing.KindDetails, isPk bool, settings config.SharedDestinationColumnSettings) string
+	DataTypeForKind(kd typing.KindDetails, isPk bool, settings config.SharedDestinationColumnSettings) (string, error)
 	KindForDataType(_type string) (typing.KindDetails, error)
+	// [IsColumnAlreadyExistsErr] - This is only needed if the SQL Dialect does not supporting adding column if not exists.
 	IsColumnAlreadyExistsErr(err error) bool
 	IsTableDoesNotExistErr(err error) bool
 	BuildCreateTableQuery(tableID TableIdentifier, temporary bool, colSQLParts []string) string

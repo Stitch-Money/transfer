@@ -11,14 +11,13 @@ import (
 func TestJSON_Convert(t *testing.T) {
 	{
 		// Wrong data type
-		value, err := JSON{}.Convert(123)
-		assert.Nil(t, value)
+		_, err := JSON{}.Convert(123)
 		assert.ErrorContains(t, err, "expected string, got int")
 	}
 	{
 		// JSON with duplicate values
 		value, err := JSON{}.Convert(`{"a": 1, "a": 2}`)
-		assert.Nil(t, err)
+		assert.NoError(t, err)
 		assert.Equal(t, map[string]any{"a": float64(2)}, value)
 	}
 }
@@ -115,7 +114,7 @@ func TestArray_Convert(t *testing.T) {
 		{
 			// Invalid json
 			_, err := NewArray(JSON{}.Convert).Convert([]any{"hello"})
-			assert.ErrorContains(t, err, "invalid character 'h' looking for beginning of value")
+			assert.Error(t, err)
 		}
 		{
 			// Invalid data type

@@ -70,7 +70,7 @@ func (d *DestinationTableConfig) MutateInMemoryColumns(columnOp constants.Column
 	d.Lock()
 	defer d.Unlock()
 	switch columnOp {
-	case constants.Add:
+	case constants.AddColumn:
 		for _, col := range cols {
 			d.columns.AddColumn(col)
 			// Delete from the permissions table, if exists.
@@ -79,36 +79,11 @@ func (d *DestinationTableConfig) MutateInMemoryColumns(columnOp constants.Column
 
 		// If we're adding columns, then the table should have either been created or already exists.
 		d.createTable = false
-	case constants.Delete:
+	case constants.DropColumn:
 		for _, col := range cols {
 			// Delete from the permissions and in-memory table
 			d.columns.DeleteColumn(col.Name())
 			delete(d.columnsToDelete, col.Name())
-		}
-	}
-}
-
-// AuditColumnsToDelete - will check its (*DestinationTableConfig) columnsToDelete against `colsToDelete` and remove any columns that are not in `colsToDelete`.
-// `colsToDelete` is derived from diffing the destination and source (if destination has extra columns)
-func (d *DestinationTableConfig) AuditColumnsToDelete(colsToDelete []columns.Column) {
-	if !d.dropDeletedColumns {
-		// If `dropDeletedColumns` is false, then let's skip this.
-		return
-	}
-
-	d.Lock()
-	defer d.Unlock()
-
-	for colName := range d.columnsToDelete {
-		var found bool
-		for _, col := range colsToDelete {
-			if found = col.Name() == colName; found {
-				break
-			}
-		}
-
-		if !found {
-			delete(d.columnsToDelete, colName)
 		}
 	}
 }
@@ -121,34 +96,21 @@ func (d *DestinationTableConfig) ReadOnlyColumnsToDelete() map[string]time.Time 
 }
 
 func (d *DestinationTableConfig) ShouldDeleteColumn(colName string, cdcTime time.Time, containOtherOperations bool) bool {
-	if d == nil {
-		// Avoid a panic and default to FALSE.
-		return false
-	}
-
-	// We should not delete if either conditions are true.
-	// 1. TableData contains only DELETES
-	// 2. Explicit setting that specifies not to drop columns
-	if !containOtherOperations {
-		return false
-	}
-
-	if !d.dropDeletedColumns {
+	// We should not delete if any of these conditions are true:
+	// 1. TableData only contains deletes (delete events may only contain the primary key values)
+	// 2. If dropping columns is disabled
+	if !containOtherOperations || !d.dropDeletedColumns {
 		return false
 	}
 
 	colsToDelete := d.ReadOnlyColumnsToDelete()
-	ts, isOk := colsToDelete[colName]
-	if isOk {
+	if ts, ok := colsToDelete[colName]; ok {
 		// If the CDC time is greater than this timestamp, then we should delete it.
 		return cdcTime.After(ts)
 	}
 
 	delTime := time.Now().UTC().Add(constants.DeletionConfidencePadding)
-	slog.Info("Column added to columnsToDelete",
-		slog.String("colName", colName),
-		slog.Time("deleteAfterTime", delTime),
-	)
+	slog.Info("Column added to columnsToDelete", slog.String("name", colName), slog.Time("deleteAfterTime", delTime))
 
 	d.AddColumnsToDelete(colName, delTime)
 	return false
@@ -157,10 +119,6 @@ func (d *DestinationTableConfig) ShouldDeleteColumn(colName string, cdcTime time
 func (d *DestinationTableConfig) AddColumnsToDelete(colName string, ts time.Time) {
 	d.Lock()
 	defer d.Unlock()
-
-	if d.columnsToDelete == nil {
-		d.columnsToDelete = make(map[string]time.Time)
-	}
 
 	d.columnsToDelete[colName] = ts
 }

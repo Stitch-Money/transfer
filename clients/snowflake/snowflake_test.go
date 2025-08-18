@@ -25,6 +25,12 @@ import (
 	"github.com/artie-labs/transfer/lib/typing/columns"
 )
 
+func buildBaseRow(data map[string]any) optimization.Row {
+	data[constants.DeleteColumnMarker] = false
+	data[constants.OnlySetDeleteColumnMarker] = false
+	return optimization.NewRow(data)
+}
+
 func (s *SnowflakeTestSuite) identifierFor(tableData *optimization.TableData) sql.TableIdentifier {
 	return s.stageStore.IdentifierFor(tableData.TopicConfig().BuildDatabaseAndSchemaPair(), tableData.Name())
 }
@@ -119,7 +125,7 @@ func (s *SnowflakeTestSuite) TestExecuteMergeNilEdgeCase() {
 
 	// Set up expectations for MERGE - use regex pattern to match the actual table name with suffix
 	mergeQueryRegex := regexp.QuoteMeta(`MERGE INTO "CUSTOMER"."PUBLIC"."`) + `.*` + regexp.QuoteMeta(`"`)
-	s.mockDB.ExpectExec(mergeQueryRegex).WillReturnResult(sqlmock.NewResult(0, 0))
+	s.mockDB.ExpectExec(mergeQueryRegex).WillReturnResult(sqlmock.NewResult(0, int64(len(rowsData))))
 
 	// Set up expectations for DROP TABLE - use regex pattern to match the actual table name with suffix
 	dropQueryRegex := regexp.QuoteMeta(`DROP TABLE IF EXISTS "CUSTOMER"."PUBLIC"."`) + `.*` + regexp.QuoteMeta(`"`)
@@ -130,8 +136,8 @@ func (s *SnowflakeTestSuite) TestExecuteMergeNilEdgeCase() {
 	assert.True(s.T(), commitTx)
 	assert.NoError(s.T(), s.mockDB.ExpectationsWereMet())
 
-	_col, isOk := tableData.ReadOnlyInMemoryCols().GetColumn("first_name")
-	assert.True(s.T(), isOk)
+	_col, ok := tableData.ReadOnlyInMemoryCols().GetColumn("first_name")
+	assert.True(s.T(), ok)
 	assert.Equal(s.T(), _col.KindDetails, typing.String)
 }
 
@@ -185,7 +191,7 @@ func (s *SnowflakeTestSuite) TestExecuteMergeReestablishAuth() {
 
 	// Set up expectations for MERGE - use regex pattern to match the actual table name with suffix
 	mergeQueryRegex := regexp.QuoteMeta(`MERGE INTO "CUSTOMER"."PUBLIC"."`) + `.*` + regexp.QuoteMeta(`"`)
-	s.mockDB.ExpectExec(mergeQueryRegex).WillReturnResult(sqlmock.NewResult(0, 0))
+	s.mockDB.ExpectExec(mergeQueryRegex).WillReturnResult(sqlmock.NewResult(0, int64(len(rowsData))))
 
 	// Set up expectations for DROP TABLE - use regex pattern to match the actual table name with suffix
 	dropQueryRegex := regexp.QuoteMeta(`DROP TABLE IF EXISTS "CUSTOMER"."PUBLIC"."`) + `.*` + regexp.QuoteMeta(`"`)
@@ -209,13 +215,13 @@ func (s *SnowflakeTestSuite) TestExecuteMerge() {
 		cols.AddColumn(columns.NewColumn(colName, kindDetails))
 	}
 
-	rowsData := make(map[string]map[string]any)
+	rowsData := make(map[string]optimization.Row)
 	for i := range 5 {
-		rowsData[fmt.Sprintf("pk-%d", i)] = map[string]any{
+		rowsData[fmt.Sprintf("pk-%d", i)] = buildBaseRow(map[string]any{
 			"id":         i,
 			"created_at": time.Now().Format(time.RFC3339Nano),
 			"name":       fmt.Sprintf("Robin-%d", i),
-		}
+		})
 	}
 
 	tblName := "orders"
@@ -228,7 +234,7 @@ func (s *SnowflakeTestSuite) TestExecuteMerge() {
 	tableData := optimization.NewTableData(&cols, config.Replication, []string{"id"}, topicConfig, tblName)
 	tableData.ResetTempTableSuffix()
 	for pk, row := range rowsData {
-		tableData.InsertRow(pk, row, false)
+		tableData.InsertRow(pk, row.GetData(), false)
 	}
 
 	tableID := s.identifierFor(tableData)
@@ -248,7 +254,7 @@ func (s *SnowflakeTestSuite) TestExecuteMerge() {
 
 	// Set up expectations for MERGE - use regex pattern to match the actual table name with suffix
 	mergeQueryRegex := regexp.QuoteMeta(`MERGE INTO "CUSTOMER"."PUBLIC"."`) + `.*` + regexp.QuoteMeta(`"`)
-	s.mockDB.ExpectExec(mergeQueryRegex).WillReturnResult(sqlmock.NewResult(0, 0))
+	s.mockDB.ExpectExec(mergeQueryRegex).WillReturnResult(sqlmock.NewResult(0, int64(len(rowsData))))
 
 	// Set up expectations for DROP TABLE - use regex pattern to match the actual table name with suffix
 	dropQueryRegex := regexp.QuoteMeta(`DROP TABLE IF EXISTS "CUSTOMER"."PUBLIC"."`) + `.*` + regexp.QuoteMeta(`"`)
@@ -271,13 +277,13 @@ func (s *SnowflakeTestSuite) TestExecuteMergeDeletionFlagRemoval() {
 		Schema:    "public",
 	}
 
-	rowsData := make(map[string]map[string]any)
+	rowsData := make(map[string]optimization.Row)
 	for i := range 5 {
-		rowsData[fmt.Sprintf("pk-%d", i)] = map[string]any{
+		rowsData[fmt.Sprintf("pk-%d", i)] = buildBaseRow(map[string]any{
 			"id":         i,
 			"created_at": time.Now().Format(time.RFC3339Nano),
 			"name":       fmt.Sprintf("Robin-%d", i),
-		}
+		})
 	}
 
 	colToKindDetailsMap := maputil.NewOrderedMap[typing.KindDetails](true)
@@ -295,7 +301,7 @@ func (s *SnowflakeTestSuite) TestExecuteMergeDeletionFlagRemoval() {
 	tableData := optimization.NewTableData(&cols, config.Replication, []string{"id"}, topicConfig, "foo")
 	tableData.ResetTempTableSuffix()
 	for pk, row := range rowsData {
-		tableData.InsertRow(pk, row, false)
+		tableData.InsertRow(pk, row.GetData(), false)
 	}
 
 	snowflakeColToKindDetailsMap := maputil.NewOrderedMap[typing.KindDetails](true)
@@ -328,7 +334,7 @@ func (s *SnowflakeTestSuite) TestExecuteMergeDeletionFlagRemoval() {
 
 	// Set up expectations for MERGE - use regex pattern to match the actual table name with suffix
 	mergeQueryRegex := regexp.QuoteMeta(`MERGE INTO "CUSTOMER"."PUBLIC"."`) + `.*` + regexp.QuoteMeta(`"`)
-	s.mockDB.ExpectExec(mergeQueryRegex).WillReturnResult(sqlmock.NewResult(0, 0))
+	s.mockDB.ExpectExec(mergeQueryRegex).WillReturnResult(sqlmock.NewResult(0, int64(len(rowsData))))
 
 	// Set up expectations for DROP TABLE - use regex pattern to match the actual table name with suffix
 	dropQueryRegex := regexp.QuoteMeta(`DROP TABLE IF EXISTS "CUSTOMER"."PUBLIC"."`) + `.*` + regexp.QuoteMeta(`"`)
@@ -343,14 +349,18 @@ func (s *SnowflakeTestSuite) TestExecuteMergeDeletionFlagRemoval() {
 	assert.Equal(s.T(), len(s.stageStore.configMap.GetTableConfig(s.identifierFor(tableData)).ReadOnlyColumnsToDelete()), 1,
 		s.stageStore.configMap.GetTableConfig(s.identifierFor(tableData)).ReadOnlyColumnsToDelete())
 
-	_, isOk := s.stageStore.configMap.GetTableConfig(s.identifierFor(tableData)).ReadOnlyColumnsToDelete()["new"]
-	assert.True(s.T(), isOk)
+	_, ok := s.stageStore.configMap.GetTableConfig(s.identifierFor(tableData)).ReadOnlyColumnsToDelete()["new"]
+	assert.True(s.T(), ok)
 
 	// Now try to execute merge where 1 of the rows have the column now
 	for _, row := range tableData.Rows() {
-		row["new"] = "123"
-		tableData.SetInMemoryColumns(&sflkCols)
+		pk, ok := row.GetValue("id")
+		assert.True(s.T(), ok)
 
+		rowData := row.GetData()
+		rowData["new"] = "123"
+		tableData.InsertRow(fmt.Sprintf("pk-%v", pk), rowData, false)
+		tableData.SetInMemoryColumns(&sflkCols)
 		inMemColumns := tableData.ReadOnlyInMemoryCols()
 		// Since sflkColumns overwrote the format, let's set it correctly again.
 		inMemColumns.UpdateColumn(columns.NewColumn("created_at", typing.TimestampTZ))
@@ -370,7 +380,7 @@ func (s *SnowflakeTestSuite) TestExecuteMergeDeletionFlagRemoval() {
 	s.mockDB.ExpectQuery(copyQueryRegex2).WillReturnRows(sqlmock.NewRows([]string{"rows_loaded"}).AddRow(fmt.Sprintf("%d", tableData.NumberOfRows())))
 
 	// Set up expectations for MERGE - use regex pattern to match the actual table name with suffix
-	s.mockDB.ExpectExec(mergeQueryRegex).WillReturnResult(sqlmock.NewResult(0, 0))
+	s.mockDB.ExpectExec(mergeQueryRegex).WillReturnResult(sqlmock.NewResult(0, int64(len(rowsData))))
 
 	// Set up expectations for DROP TABLE - use regex pattern to match the actual table name with suffix
 	s.mockDB.ExpectExec(dropQueryRegex).WillReturnResult(sqlmock.NewResult(0, 0))

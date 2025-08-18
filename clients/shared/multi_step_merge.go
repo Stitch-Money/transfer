@@ -33,7 +33,7 @@ func MultiStepMerge(ctx context.Context, dest destination.Destination, tableData
 
 	msmTableID := dest.IdentifierFor(tableData.TopicConfig().BuildDatabaseAndSchemaPair(), fmt.Sprintf("%s_%s_msm", constants.ArtiePrefix, tableData.Name()))
 	targetTableID := dest.IdentifierFor(tableData.TopicConfig().BuildDatabaseAndSchemaPair(), tableData.Name())
-	targetTableConfig, err := dest.GetTableConfig(targetTableID, tableData.TopicConfig().DropDeletedColumns)
+	targetTableConfig, err := dest.GetTableConfig(ctx, targetTableID, tableData.TopicConfig().DropDeletedColumns)
 	if err != nil {
 		return false, fmt.Errorf("failed to get table config: %w", err)
 	}
@@ -50,7 +50,7 @@ func MultiStepMerge(ctx context.Context, dest destination.Destination, tableData
 		}
 	}
 
-	msmTableConfig, err := dest.GetTableConfig(msmTableID, tableData.TopicConfig().DropDeletedColumns)
+	msmTableConfig, err := dest.GetTableConfig(ctx, msmTableID, tableData.TopicConfig().DropDeletedColumns)
 	if err != nil {
 		return false, fmt.Errorf("failed to get table config: %w", err)
 	}
@@ -199,7 +199,7 @@ func merge(ctx context.Context, dwh destination.Destination, tableData *optimiza
 		mergeStatements = _mergeStatements
 	}
 
-	if err := destination.ExecContextStatements(ctx, dwh, mergeStatements); err != nil {
+	if _, err := destination.ExecContextStatements(ctx, dwh, mergeStatements); err != nil {
 		return fmt.Errorf("failed to execute merge statements: %w", err)
 	}
 

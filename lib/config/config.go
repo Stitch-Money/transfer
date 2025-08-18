@@ -1,11 +1,10 @@
 package config
 
 import (
+	"cmp"
 	"fmt"
 	"io"
-	"math/rand/v2"
 	"os"
-	"strings"
 
 	"gopkg.in/yaml.v3"
 
@@ -25,17 +24,6 @@ const (
 	FlushIntervalSecondsMax = 6 * 60 * 60
 )
 
-func (k *Kafka) BootstrapServers(shuffle bool) []string {
-	parts := strings.Split(k.BootstrapServer, ",")
-	if shuffle {
-		rand.Shuffle(len(parts), func(i, j int) {
-			parts[i], parts[j] = parts[j], parts[i]
-		})
-	}
-
-	return parts
-}
-
 func (s *S3Settings) Validate() error {
 	if s == nil {
 		return fmt.Errorf("s3 settings are nil")
@@ -52,19 +40,8 @@ func (s *S3Settings) Validate() error {
 	return nil
 }
 
-func (k *Kafka) String() string {
-	// Don't log credentials.
-	return fmt.Sprintf("bootstrapServer=%s, groupID=%s, user_set=%v, pass_set=%v",
-		k.BootstrapServer, k.GroupID, k.Username != "", k.Password != "")
-}
-
-func (c Config) TopicConfigs() ([]*kafkalib.TopicConfig, error) {
-	switch c.Queue {
-	case constants.Kafka, constants.Reader:
-		return c.Kafka.TopicConfigs, nil
-	}
-
-	return nil, fmt.Errorf("unsupported queue: %q", c.Queue)
+func (c Config) TopicConfigs() []*kafkalib.TopicConfig {
+	return c.Kafka.TopicConfigs
 }
 
 func (m Mode) String() string {
@@ -80,37 +57,20 @@ func readFileToConfig(pathToConfig string) (*Config, error) {
 	defer file.Close()
 
 	var bytes []byte
-	bytes, err = io.ReadAll(file)
-	if err != nil {
+	if bytes, err = io.ReadAll(file); err != nil {
 		return nil, err
 	}
 
 	var config Config
-	err = yaml.Unmarshal(bytes, &config)
-	if err != nil {
+	if err = yaml.Unmarshal(bytes, &config); err != nil {
 		return nil, err
 	}
 
-	if config.Queue == "" {
-		// We default to Kafka for backwards compatibility
-		config.Queue = constants.Kafka
-	}
-
-	if config.FlushIntervalSeconds == 0 {
-		config.FlushIntervalSeconds = defaultFlushTimeSeconds
-	}
-
-	if config.BufferRows == 0 {
-		config.BufferRows = defaultBufferPoolSize
-	}
-
-	if config.FlushSizeKb == 0 {
-		config.FlushSizeKb = defaultFlushSizeKb
-	}
-
-	if config.Mode == "" {
-		config.Mode = Replication
-	}
+	config.Queue = cmp.Or(config.Queue, constants.Kafka)
+	config.FlushIntervalSeconds = cmp.Or(config.FlushIntervalSeconds, defaultFlushTimeSeconds)
+	config.BufferRows = cmp.Or(config.BufferRows, defaultBufferPoolSize)
+	config.FlushSizeKb = cmp.Or(config.FlushSizeKb, defaultFlushSizeKb)
+	config.Mode = cmp.Or(config.Mode, Replication)
 
 	return &config, nil
 }
@@ -204,17 +164,13 @@ func (c Config) Validate() error {
 		}
 	}
 
-	tcs, err := c.TopicConfigs()
-	if err != nil {
-		return fmt.Errorf("failed to retrieve topic configs: %w", err)
-	}
-
+	tcs := c.TopicConfigs()
 	if len(tcs) == 0 {
 		return fmt.Errorf("no topic configs found")
 	}
 
 	for _, topicConfig := range tcs {
-		if err = topicConfig.Validate(); err != nil {
+		if err := topicConfig.Validate(); err != nil {
 			return fmt.Errorf("failed to validate topic config: %w", err)
 		}
 

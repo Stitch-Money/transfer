@@ -5,14 +5,18 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
+	"github.com/apache/arrow/go/v17/arrow"
+	"github.com/apache/arrow/go/v17/arrow/array"
+	"github.com/apache/arrow/go/v17/arrow/memory"
+	"github.com/apache/arrow/go/v17/parquet"
+	"github.com/apache/arrow/go/v17/parquet/compress"
+	"github.com/apache/arrow/go/v17/parquet/pqarrow"
 	awsCfg "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
-	"github.com/xitongsys/parquet-go-source/local"
-	"github.com/xitongsys/parquet-go/parquet"
-	"github.com/xitongsys/parquet-go/writer"
 
 	"github.com/artie-labs/transfer/lib/awslib"
 	"github.com/artie-labs/transfer/lib/config"
@@ -23,10 +27,15 @@ import (
 	"github.com/artie-labs/transfer/lib/stringutil"
 )
 
+const batchSize = 1000
+
 type Store struct {
 	config   config.Config
 	s3Client awslib.S3Client
-	location *time.Location
+}
+
+func (s Store) GetConfig() config.Config {
+	return s.config
 }
 
 func (s Store) Validate() error {
@@ -69,48 +78,97 @@ func buildTemporaryFilePath(tableData *optimization.TableData) string {
 	return fmt.Sprintf("/tmp/%d_%s.parquet", tableData.LatestCDCTs.UnixMilli(), stringutil.Random(4))
 }
 
-// WriteParquetFiles writes the table data to a parquet file at the specified path.
-// Returns an error if any step of the writing process fails.
-func WriteParquetFiles(tableData *optimization.TableData, filePath string, location *time.Location) error {
+// WriteParquetFiles writes the table data to a parquet file at the specified path using Arrow and returns an error if any step of the writing process fails.
+func WriteParquetFiles(tableData *optimization.TableData, filePath string) error {
+	arrowSchema, err := parquetutil.BuildArrowSchemaFromColumns(tableData.ReadOnlyInMemoryCols().ValidColumns())
+	if err != nil {
+		return fmt.Errorf("failed to generate arrow schema: %w", err)
+	}
+
+	// Create file for writing
+	file, err := os.Create(filePath)
+	if err != nil {
+		return fmt.Errorf("failed to create parquet file: %w", err)
+	}
+	defer file.Close()
+
+	// Create parquet file writer
+	writer, err := pqarrow.NewFileWriter(arrowSchema, file, parquet.NewWriterProperties(parquet.WithCompression(compress.Codecs.Gzip)), pqarrow.DefaultWriterProps())
+	if err != nil {
+		return fmt.Errorf("failed to create parquet writer: %w", err)
+	}
+	defer writer.Close()
+
+	// Use streaming approach to write data in batches
+	if err := writeArrowRecordsInBatches(writer, arrowSchema, tableData, batchSize); err != nil {
+		return fmt.Errorf("failed to write records in batches: %w", err)
+	}
+
+	return nil
+}
+
+// writeArrowRecordsInBatches processes table data in configurable batch sizes and writes incrementally to reduce memory usage.
+func writeArrowRecordsInBatches(writer *pqarrow.FileWriter, schema *arrow.Schema, tableData *optimization.TableData, batchSize int) error {
+	pool := memory.NewGoAllocator()
+	rows := tableData.Rows()
 	cols := tableData.ReadOnlyInMemoryCols().ValidColumns()
-	schema, err := parquetutil.BuildCSVSchema(cols, location)
-	if err != nil {
-		return fmt.Errorf("failed to generate parquet schema: %w", err)
-	}
+	writer.NewBufferedRowGroup()
+	for batch := range slices.Chunk(rows, batchSize) {
+		var builders []array.Builder
+		for _, field := range schema.Fields() {
+			builders = append(builders, array.NewBuilder(pool, field.Type))
+		}
 
-	fw, err := local.NewLocalFileWriter(filePath)
-	if err != nil {
-		return fmt.Errorf("failed to create a local parquet file: %w", err)
-	}
+		// Process the current batch of rows
+		for _, row := range batch {
+			for i, col := range cols {
+				value, _ := row.GetValue(col.Name())
 
-	pw, err := writer.NewCSVWriter(schema, fw, 4)
-	if err != nil {
-		return fmt.Errorf("failed to instantiate parquet writer: %w", err)
-	}
+				// Parse value for Arrow
+				parsedValue, err := parquetutil.ParseValueForArrow(value, col.KindDetails)
+				if err != nil {
+					for _, builder := range builders {
+						builder.Release()
+					}
+					return fmt.Errorf("failed to parse value for column %q: %w", col.Name(), err)
+				}
 
-	pw.CompressionType = parquet.CompressionCodec_GZIP
-	for _, val := range tableData.Rows() {
-		var row []any
-		for _, col := range cols {
-			value, err := parquetutil.ParseValue(val[col.Name()], col.KindDetails, location)
-			if err != nil {
-				return fmt.Errorf("failed to parse value, err: %w, value: %v, column: %q", err, val[col.Name()], col.Name())
+				// Convert and append to builder
+				if err := parquetutil.ConvertValueForArrowBuilder(builders[i], parsedValue); err != nil {
+					for _, builder := range builders {
+						builder.Release()
+					}
+					return fmt.Errorf("failed to append value to builder for column %q: %w", col.Name(), err)
+				}
 			}
-
-			row = append(row, value)
 		}
 
-		if err = pw.Write(row); err != nil {
-			return fmt.Errorf("failed to write row: %w", err)
+		var arrays []arrow.Array
+		for _, builder := range builders {
+			arrays = append(arrays, builder.NewArray())
 		}
-	}
 
-	if err = pw.WriteStop(); err != nil {
-		return fmt.Errorf("failed to write stop: %w", err)
-	}
+		record := array.NewRecord(schema, arrays, int64(len(batch)))
+		if err := writer.WriteBuffered(record); err != nil {
+			record.Release()
+			for _, arr := range arrays {
+				arr.Release()
+			}
+			for _, builder := range builders {
+				builder.Release()
+			}
+			return fmt.Errorf("failed to write batch record: %w", err)
+		}
 
-	if err = fw.Close(); err != nil {
-		return fmt.Errorf("failed to close filewriter: %w", err)
+		// Clean up this batch's resources
+		record.Release()
+		for _, arr := range arrays {
+			arr.Release()
+		}
+
+		for _, builder := range builders {
+			builder.Release()
+		}
 	}
 
 	return nil
@@ -127,7 +185,7 @@ func (s *Store) Merge(ctx context.Context, tableData *optimization.TableData) (b
 	}
 
 	fp := buildTemporaryFilePath(tableData)
-	if err := WriteParquetFiles(tableData, fp, s.location); err != nil {
+	if err := WriteParquetFiles(tableData, fp); err != nil {
 		return false, err
 	}
 
@@ -165,18 +223,9 @@ func LoadStore(ctx context.Context, cfg config.Config) (*Store, error) {
 		return nil, fmt.Errorf("failed to load aws config: %w", err)
 	}
 
-	var location *time.Location
-	if cfg.SharedDestinationSettings.SharedTimestampSettings.Location != "" {
-		location, err = time.LoadLocation(cfg.SharedDestinationSettings.SharedTimestampSettings.Location)
-		if err != nil {
-			return nil, fmt.Errorf("failed to load location: %w", err)
-		}
-	}
-
 	store := Store{
 		config:   cfg,
 		s3Client: awslib.NewS3Client(awsConfig),
-		location: location,
 	}
 
 	if err := store.Validate(); err != nil {

@@ -29,6 +29,10 @@ type Store struct {
 	_awsS3Client awslib.S3Client
 }
 
+func (s Store) GetConfig() config.Config {
+	return s.config
+}
+
 func (s *Store) IdentifierFor(databaseAndSchema kafkalib.DatabaseAndSchemaPair, table string) sql.TableIdentifier {
 	return dialect.NewTableIdentifier(databaseAndSchema.Database, databaseAndSchema.Schema, table)
 }
@@ -47,7 +51,7 @@ func (s *Store) DropTable(ctx context.Context, tableID sql.TableIdentifier) erro
 	return nil
 }
 
-func (s *Store) GetTableConfig(tableID sql.TableIdentifier, dropDeletedColumns bool) (*types.DestinationTableConfig, error) {
+func (s *Store) GetTableConfig(ctx context.Context, tableID sql.TableIdentifier, dropDeletedColumns bool) (*types.DestinationTableConfig, error) {
 	return shared.GetTableCfgArgs{
 		Destination:           s,
 		TableID:               tableID,
@@ -56,16 +60,11 @@ func (s *Store) GetTableConfig(tableID sql.TableIdentifier, dropDeletedColumns b
 		ColumnNameForDataType: "type",
 		ColumnNameForComment:  "comment",
 		DropDeletedColumns:    dropDeletedColumns,
-	}.GetTableConfig()
+	}.GetTableConfig(ctx)
 }
 
 func (s *Store) SweepTemporaryTables(ctx context.Context) error {
-	tcs, err := s.config.TopicConfigs()
-	if err != nil {
-		return err
-	}
-
-	return shared.Sweep(ctx, s, tcs, s.dialect().BuildSweepQuery)
+	return shared.Sweep(ctx, s, s.config.TopicConfigs(), s.dialect().BuildSweepQuery)
 }
 
 func (s *Store) Dialect() sql.Dialect {
@@ -89,7 +88,12 @@ func (s *Store) GetConfigMap() *types.DestinationTableConfigMap {
 func (s *Store) Dedupe(ctx context.Context, tableID sql.TableIdentifier, primaryKeys []string, includeArtieUpdatedAt bool) error {
 	stagingTableID := shared.TempTableID(tableID)
 	dedupeQueries := s.Dialect().BuildDedupeQueries(tableID, stagingTableID, primaryKeys, includeArtieUpdatedAt)
-	return destination.ExecContextStatements(ctx, s, dedupeQueries)
+
+	if _, err := destination.ExecContextStatements(ctx, s, dedupeQueries); err != nil {
+		return fmt.Errorf("failed to dedupe: %w", err)
+	}
+
+	return nil
 }
 
 func LoadSnowflake(ctx context.Context, cfg config.Config, _store *db.Store) (*Store, error) {
@@ -157,12 +161,7 @@ func (s *Store) ensureExternalStageExists(ctx context.Context) error {
 		return err
 	}
 
-	tcs, err := s.config.TopicConfigs()
-	if err != nil {
-		return fmt.Errorf("failed to get topic configs: %w", err)
-	}
-
-	for _, dbAndSchemaPair := range kafkalib.GetUniqueDatabaseAndSchemaPairs(tcs) {
+	for _, dbAndSchemaPair := range kafkalib.GetUniqueDatabaseAndSchemaPairs(s.config.TopicConfigs()) {
 		describeQuery := s.dialect().BuildDescribeStageQuery(dbAndSchemaPair.Database, dbAndSchemaPair.Schema, s.config.Snowflake.ExternalStage.Name)
 		if _, err := s.QueryContext(ctx, describeQuery); err != nil {
 			if strings.Contains(err.Error(), "does not exist") {

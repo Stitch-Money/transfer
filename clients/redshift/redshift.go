@@ -33,6 +33,10 @@ type Store struct {
 	db.Store
 }
 
+func (s Store) GetConfig() config.Config {
+	return s.config
+}
+
 func (s *Store) BuildCredentialsClause(ctx context.Context) (string, error) {
 	if s._awsCredentials == nil {
 		return s.credentialsClause, nil
@@ -96,7 +100,7 @@ func (s *Store) dialect() dialect.RedshiftDialect {
 	return dialect.RedshiftDialect{}
 }
 
-func (s *Store) GetTableConfig(tableID sql.TableIdentifier, dropDeletedColumns bool) (*types.DestinationTableConfig, error) {
+func (s *Store) GetTableConfig(ctx context.Context, tableID sql.TableIdentifier, dropDeletedColumns bool) (*types.DestinationTableConfig, error) {
 	return shared.GetTableCfgArgs{
 		Destination:           s,
 		TableID:               tableID,
@@ -105,22 +109,22 @@ func (s *Store) GetTableConfig(tableID sql.TableIdentifier, dropDeletedColumns b
 		ColumnNameForDataType: "data_type",
 		ColumnNameForComment:  "description",
 		DropDeletedColumns:    dropDeletedColumns,
-	}.GetTableConfig()
+	}.GetTableConfig(ctx)
 }
 
 func (s *Store) SweepTemporaryTables(ctx context.Context) error {
-	tcs, err := s.config.TopicConfigs()
-	if err != nil {
-		return err
-	}
-
-	return shared.Sweep(ctx, s, tcs, s.dialect().BuildSweepQuery)
+	return shared.Sweep(ctx, s, s.config.TopicConfigs(), s.dialect().BuildSweepQuery)
 }
 
 func (s *Store) Dedupe(ctx context.Context, tableID sql.TableIdentifier, primaryKeys []string, includeArtieUpdatedAt bool) error {
 	stagingTableID := shared.TempTableID(tableID)
 	dedupeQueries := s.Dialect().BuildDedupeQueries(tableID, stagingTableID, primaryKeys, includeArtieUpdatedAt)
-	return destination.ExecContextStatements(ctx, s, dedupeQueries)
+
+	if _, err := destination.ExecContextStatements(ctx, s, dedupeQueries); err != nil {
+		return fmt.Errorf("failed to dedupe: %w", err)
+	}
+
+	return nil
 }
 
 func LoadRedshift(ctx context.Context, cfg config.Config, _store *db.Store) (*Store, error) {

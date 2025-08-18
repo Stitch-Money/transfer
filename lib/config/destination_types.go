@@ -25,6 +25,15 @@ type Databricks struct {
 	Volume              string `yaml:"volume"`
 }
 
+type Postgres struct {
+	Host       string `yaml:"host"`
+	Port       int    `yaml:"port"`
+	Username   string `yaml:"username"`
+	Password   string `yaml:"password"`
+	Database   string `yaml:"database"`
+	DisableSSL bool   `yaml:"disableSSL"`
+}
+
 type MSSQL struct {
 	Host     string `yaml:"host"`
 	Port     int    `yaml:"port"`
@@ -93,6 +102,7 @@ type Iceberg struct {
 	SessionHeartbeatTimeoutInSecond int    `yaml:"sessionHeartbeatTimeoutInSecond"`
 	SessionDriverMemory             string `yaml:"sessionDriverMemory"`
 	SessionExecutorMemory           string `yaml:"sessionExecutorMemory"`
+	SessionName                     string `yaml:"sessionName"`
 
 	// Current implementation of Iceberg uses S3Tables:
 	S3Tables *S3Tables `yaml:"s3Tables,omitempty"`
