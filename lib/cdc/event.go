@@ -30,21 +30,23 @@ type Event interface {
 }
 
 type TableID struct {
-	Schema string
-	Table  string
+	Catalog string
+	Schema  string
+	Table   string
 }
 
-func NewTableID(schema, table string) TableID {
+func NewTableID(catalog, schema, table string) TableID {
 	return TableID{
-		Schema: schema,
-		Table:  table,
+		Catalog: catalog,
+		Schema:  schema,
+		Table:   table,
 	}
 }
 
 func (t TableID) IsEmpty() bool {
-	return t.Schema == "" && t.Table == ""
+	return t.Catalog == "" && t.Schema == "" && t.Table == ""
 }
 
 func (t TableID) String() string {
-	return fmt.Sprintf("%s.%s", t.Schema, t.Table)
+	return fmt.Sprintf("%s.%s.%s", t.Catalog, t.Schema, t.Table)
 }

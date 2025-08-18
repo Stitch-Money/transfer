@@ -11,7 +11,7 @@ import (
 
 func TestTableData_Complete(t *testing.T) {
 	db := NewMemoryDB()
-	tableID := cdc.NewTableID("schema", "table")
+	tableID := cdc.NewTableID("database", "schema", "table")
 	{
 		// Does not exist
 		_, ok := db.TableData()[tableID]

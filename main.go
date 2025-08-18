@@ -31,6 +31,10 @@ func main() {
 	if err != nil {
 		logger.Fatal("Failed to initialize config", slog.Any("err", err))
 	}
+	validationError := config.ValidateSettings(settings)
+	if validationError != nil {
+		logger.Fatal("Config validation failed", slog.Any("err", validationError))
+	}
 
 	// Initialize default logger
 	_logger, cleanUpHandlers := logger.NewLogger(settings.VerboseLogging, settings.Config.Reporting.Sentry, version)

@@ -22,7 +22,7 @@ var (
 	db      = "lemonade"
 	schema  = "public"
 	table   = "orders"
-	tableID = cdc.NewTableID(schema, table)
+	tableID = cdc.NewTableID(db, schema, table)
 )
 
 func TestProcessMessageFailures(t *testing.T) {

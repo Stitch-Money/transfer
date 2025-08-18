@@ -27,7 +27,7 @@ var topicConfig = kafkalib.TopicConfig{
 func (f *FlushTestSuite) TestMemoryBasic() {
 	mockEvent := &mocks.FakeEvent{}
 	mockEvent.GetTableNameReturns(topicConfig.TableName)
-	expectedTableID := cdc.NewTableID(topicConfig.Schema, topicConfig.TableName)
+	expectedTableID := cdc.NewTableID(topicConfig.Database, topicConfig.Schema, topicConfig.TableName)
 
 	for i := range 5 {
 		mockEvent.GetDataReturns(map[string]any{
@@ -86,9 +86,9 @@ func (f *FlushTestSuite) TestShouldFlush() {
 
 func (f *FlushTestSuite) TestMemoryConcurrency() {
 	tableIDs := []cdc.TableID{
-		cdc.NewTableID("public", "dusty"),
-		cdc.NewTableID("public", "snowflake"),
-		cdc.NewTableID("public", "postgres"),
+		cdc.NewTableID("database", "public", "dusty"),
+		cdc.NewTableID("database", "public", "snowflake"),
+		cdc.NewTableID("database", "public", "postgres"),
 	}
 	var wg sync.WaitGroup
 
@@ -109,7 +109,7 @@ func (f *FlushTestSuite) TestMemoryConcurrency() {
 					"cat":                               "dog",
 				}, nil)
 
-				evt, err := event.ToMemoryEvent(mockEvent, map[string]any{"id": fmt.Sprintf("pk-%d", i)}, kafkalib.TopicConfig{Schema: tableID.Schema, Topic: topicConfig.Topic}, config.Replication)
+				evt, err := event.ToMemoryEvent(mockEvent, map[string]any{"id": fmt.Sprintf("pk-%d", i)}, kafkalib.TopicConfig{Database: tableID.Catalog, Schema: tableID.Schema, Topic: topicConfig.Topic}, config.Replication)
 				assert.NoError(f.T(), err)
 
 				kafkaMsg := kafka.Message{Partition: 1, Offset: int64(i)}

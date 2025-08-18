@@ -223,7 +223,7 @@ func ToMemoryEvent(event cdc.Event, pkMap map[string]any, tc kafkalib.TopicConfi
 		// [primaryKeys] needs to be sorted so that we have a deterministic way to identify a row in our in-memory db.
 		primaryKeys:    pks,
 		table:          tblName,
-		tableID:        cdc.NewTableID(tc.Schema, tblName),
+		tableID:        cdc.NewTableID(tc.Database, tc.Schema, tblName),
 		optionalSchema: optionalSchema,
 		columns:        cols,
 		data:           transformData(evtData, tc),
