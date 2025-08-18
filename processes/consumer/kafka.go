@@ -13,6 +13,7 @@ import (
 	"github.com/artie-labs/transfer/lib/jitter"
 	"github.com/artie-labs/transfer/lib/kafkalib"
 	"github.com/artie-labs/transfer/lib/logger"
+	"github.com/artie-labs/transfer/lib/stringutil"
 	"github.com/artie-labs/transfer/lib/telemetry/metrics/base"
 	"github.com/artie-labs/transfer/models"
 	"github.com/segmentio/kafka-go"
@@ -44,7 +45,15 @@ func (t *TopicToConsumer) Get(topic string) kafkalib.Consumer {
 }
 
 func StartConsumer(ctx context.Context, cfg config.Config, inMemDB *models.DatabaseData, dest destination.Baseline, metricsClient base.Client) {
-	kafkaConn := kafkalib.NewConnection(cfg.Kafka.EnableAWSMSKIAM, cfg.Kafka.DisableTLS, cfg.Kafka.Username, cfg.Kafka.Password, kafkalib.DefaultTimeout)
+
+	var kafkaConn kafkalib.Connection
+
+	if cfg.Kafka.SaslMechanism == "PLAIN" {
+		kafkaConn = kafkalib.NewSaslPlainConnection(cfg.Kafka.Username, cfg.Kafka.Password)
+	} else {
+		kafkaConn = kafkalib.NewConnection(cfg.Kafka.EnableAWSMSKIAM, cfg.Kafka.DisableTLS, cfg.Kafka.Username, cfg.Kafka.Password)
+	}
+
 	slog.Info("Starting Kafka consumer...",
 		slog.Any("config", cfg.Kafka),
 		slog.Any("authMechanism", kafkaConn.Mechanism()),
@@ -59,6 +68,12 @@ func StartConsumer(ctx context.Context, cfg config.Config, inMemDB *models.Datab
 	topicToConsumer = NewTopicToConsumer()
 	var topics []string
 	for _, topicConfig := range cfg.Kafka.TopicConfigs {
+		empty := stringutil.Empty(topicConfig.Database, topicConfig.Schema, topicConfig.Topic, topicConfig.CDCFormat)
+		if empty {
+			slog.Warn("database, schema, topic or cdc format is empty, skipping")
+			continue
+		}
+
 		tcFmtMap.Add(topicConfig.Topic, TopicConfigFormatter{
 			tc:     *topicConfig,
 			Format: format.GetFormatParser(topicConfig.CDCFormat, topicConfig.Topic),
