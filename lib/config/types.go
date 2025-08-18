@@ -16,23 +16,6 @@ type Sentry struct {
 	DSN string `yaml:"dsn"`
 }
 
-// TODO: move config into lib/kafkalib/kafka
-type Kafka struct {
-	// Comma-separated Kafka servers to port.
-	// e.g. host1:port1,host2:port2,...
-	// Following kafka's spec mentioned here: https://kafka.apache.org/documentation/#producerconfigs_bootstrap.servers
-	BootstrapServer string                  `yaml:"bootstrapServer"`
-	GroupID         string                  `yaml:"groupID"`
-	TopicConfigs    []*kafkalib.TopicConfig `yaml:"topicConfigs"`
-
-	// Optional parameters
-	Username        string `yaml:"username,omitempty"`
-	Password        string `yaml:"password,omitempty"`
-	EnableAWSMSKIAM bool   `yaml:"enableAWSMKSIAM,omitempty"`
-	DisableTLS      bool   `yaml:"disableTLS,omitempty"`
-	SaslMechanism   string `yaml:"saslMechanism,omitempty"`
-}
-
 type SharedDestinationColumnSettings struct {
 	// TODO: Deprecate BigQueryNumericForVariableNumeric in favor of UseBigNumericForVariableNumeric
 	// BigQueryNumericForVariableNumeric - If enabled, we will use BigQuery's NUMERIC type for variable numeric types.

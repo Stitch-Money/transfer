@@ -51,7 +51,7 @@ func StartConsumer(ctx context.Context, cfg config.Config, inMemDB *models.Datab
 	if cfg.Kafka.SaslMechanism == "PLAIN" {
 		kafkaConn = kafkalib.NewSaslPlainConnection(cfg.Kafka.Username, cfg.Kafka.Password)
 	} else {
-		kafkaConn = kafkalib.NewConnection(cfg.Kafka.EnableAWSMSKIAM, cfg.Kafka.DisableTLS, cfg.Kafka.Username, cfg.Kafka.Password)
+		kafkaConn = kafkalib.NewConnection(cfg.Kafka.EnableAWSMSKIAM, cfg.Kafka.DisableTLS, cfg.Kafka.Username, cfg.Kafka.Password, kafkalib.DefaultTimeout)
 	}
 
 	slog.Info("Starting Kafka consumer...",
