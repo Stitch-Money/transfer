@@ -40,13 +40,14 @@ func ValidateTopicConfigs(topicConfigs []*kafkalib.TopicConfig) error {
 		hasher.Write([]byte(topicConfig.Database))
 		hasher.Write([]byte(topicConfig.Schema))
 		hasher.Write([]byte(topicConfig.TableName))
+		hasher.Write([]byte(topicConfig.Topic))
 		sha := hex.EncodeToString(hasher.Sum(nil))
 		if _, ok := topicHashSet[sha]; !ok {
 			topicHashSet[sha] = idx
 		} else {
-			return fmt.Errorf("topic config at index: %d conflicts with previous: %d, check database, schema and table doen't overlap",
-				idx,
-				topicHashSet[sha],
+			return fmt.Errorf("topic config: %v conflicts with previous: %v, check database, schema, table and topic don't overlap",
+				*(topicConfigs[idx]),
+				*(topicConfigs[topicHashSet[sha]]),
 			)
 		}
 	}

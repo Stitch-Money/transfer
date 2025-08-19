@@ -15,6 +15,7 @@ func TestValidateTopicConfigs(t *testing.T) {
 		Database:  "database",
 		Schema:    "schema",
 		TableName: "table",
+		Topic:     "topic",
 	}
 	input = append(input, config)
 
@@ -23,4 +24,11 @@ func TestValidateTopicConfigs(t *testing.T) {
 	err := ValidateTopicConfigs(input)
 	assert.NotEmpty(t, input)
 	assert.Error(t, err)
+}
+
+func TestValidateSettings(t *testing.T) {
+	settings, err := LoadSettings([]string{"-c", "./testdata/config.yaml"}, true)
+	assert.NoError(t, err)
+	validationError := ValidateSettings(settings)
+	assert.NoError(t, validationError)
 }
