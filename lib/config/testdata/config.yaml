@@ -1,0 +1,37 @@
+mode: replication
+outputSource: snowflake
+queue: kafka 
+
+kafka:
+  bootstrapServer: pkc-1234xyz.somewhere.azure.confluent.cloud:9092
+  groupID: artie_transfer
+  username: "..." # Confluent API key
+  password: "..." # Confluent API token
+  saslMechanism: PLAIN
+  topicConfigs:
+    - db: CDC_CARD_BIN_PRODUCTION
+      schema: PUBLIC
+      topic: dataeng.microservices-shared-card_bin.public.bin_data
+      cdcFormat: debezium.postgres
+      cdcKeyFormat: org.apache.kafka.connect.json.JsonConverter
+    - db: CDC_CARD_BIN_PRODUCTION
+      schema: PUBLIC
+      topic: dataeng.microservices-shared-card_bin.public.pasa_bin
+      cdcFormat: debezium.postgres
+      cdcKeyFormat: org.apache.kafka.connect.json.JsonConverter
+
+snowflake:
+  account: "..."
+  username: "ARTIE_SERVICE_USER"
+  pathToPrivateKey: "/vault/secrets/snowflake-private-key.p8"
+  warehouse: ARTIE_TRANSFER_WAREHOUSE
+  region: "north-europe.azure"
+
+telemetry:
+  metrics:
+    provider: datadog
+    settings:
+      tags:
+       - env:production
+      namespace: "transfer."
+      addr: "unix:///var/run/datadog/dsd.socket"
