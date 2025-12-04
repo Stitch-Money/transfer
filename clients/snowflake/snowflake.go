@@ -20,6 +20,11 @@ import (
 	"github.com/artie-labs/transfer/lib/sql"
 )
 
+func init() {
+	// Snowflake's logger is noisy, disable it since we're going to use our own.
+	_ = gosnowflake.GetLogger().SetLogLevel("fatal")
+}
+
 type Store struct {
 	db.Store
 	configMap *types.DestinationTableConfigMap
@@ -38,8 +43,8 @@ func (s *Store) IdentifierFor(databaseAndSchema kafkalib.DatabaseAndSchemaPair, 
 }
 
 func (s *Store) DropTable(ctx context.Context, tableID sql.TableIdentifier) error {
-	if !tableID.AllowToDrop() {
-		return fmt.Errorf("table %q is not allowed to be dropped", tableID.FullyQualifiedName())
+	if !tableID.TemporaryTable() {
+		return fmt.Errorf("table %q is not a temporary table, so it cannot be dropped", tableID.FullyQualifiedName())
 	}
 
 	if _, err := s.ExecContext(ctx, s.dialect().BuildDropTableQuery(tableID)); err != nil {
@@ -170,6 +175,7 @@ func (s *Store) ensureExternalStageExists(ctx context.Context) error {
 					dbAndSchemaPair.Schema,
 					s.config.Snowflake.ExternalStage.Name,
 					s.config.Snowflake.ExternalStage.Bucket,
+					s.config.Snowflake.ExternalStage.Prefix,
 					s.config.Snowflake.ExternalStage.CredentialsClause,
 				)
 				if _, err := s.ExecContext(ctx, createStageQuery); err != nil {

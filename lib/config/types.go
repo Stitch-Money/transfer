@@ -3,6 +3,7 @@ package config
 import (
 	"github.com/artie-labs/transfer/lib/config/constants"
 	"github.com/artie-labs/transfer/lib/kafkalib"
+	"github.com/artie-labs/transfer/lib/webhooksutil"
 )
 
 type Mode string
@@ -10,6 +11,17 @@ type Mode string
 const (
 	History     Mode = "history"
 	Replication Mode = "replication"
+)
+
+func (m Mode) IsValid() bool {
+	return m == History || m == Replication
+}
+
+type KafkaClient string
+
+const (
+	KafkaGoClient KafkaClient = "kafka-go"
+	FranzGoClient KafkaClient = "franz-go"
 )
 
 type Sentry struct {
@@ -38,6 +50,17 @@ type SharedDestinationSettings struct {
 	UseNewStringMethod bool `yaml:"useNewStringMethod"`
 	// [EnableMergeAssertion] - This will enable the merge assertion checks for the destination.
 	EnableMergeAssertion bool `yaml:"enableMergeAssertion,omitempty"`
+	// [SkipBadTimestamps] - If enabled, we'll skip over bad timestamp (or alike) values instead of throwing an error.
+	SkipBadTimestamps bool `yaml:"skipBadTimestamps"`
+	// [SkipBadIntegers] - If enabled, we'll skip over bad integer values instead of throwing an error.
+	SkipBadIntegers bool `yaml:"skipBadIntegers"`
+}
+
+type StagingTableReuseConfig struct {
+	// Enable staging table reuse with truncation instead of drop
+	Enabled bool `yaml:"enabled"`
+	// Pattern for reusable staging table names (default: "_staging")
+	TableNameSuffix string `yaml:"tableNameSuffix,omitempty"`
 }
 
 type Reporting struct {
@@ -46,9 +69,10 @@ type Reporting struct {
 }
 
 type Config struct {
-	Mode   Mode                      `yaml:"mode"`
-	Output constants.DestinationKind `yaml:"outputSource"`
-	Queue  constants.QueueKind       `yaml:"queue"`
+	KafkaClient KafkaClient               `yaml:"kafkaClient,omitempty"`
+	Mode        Mode                      `yaml:"mode"`
+	Output      constants.DestinationKind `yaml:"outputSource"`
+	Queue       constants.QueueKind       `yaml:"queue"`
 
 	// Flush rules
 	FlushIntervalSeconds int  `yaml:"flushIntervalSeconds"`
@@ -59,16 +83,20 @@ type Config struct {
 	Kafka *kafkalib.Kafka `yaml:"kafka,omitempty"`
 
 	// Supported destinations
-	BigQuery   *BigQuery   `yaml:"bigquery,omitempty"`
-	Databricks *Databricks `yaml:"databricks,omitempty"`
-	MSSQL      *MSSQL      `yaml:"mssql,omitempty"`
-	Postgres   *Postgres   `yaml:"postgres,omitempty"`
-	Snowflake  *Snowflake  `yaml:"snowflake,omitempty"`
-	Redshift   *Redshift   `yaml:"redshift,omitempty"`
-	S3         *S3Settings `yaml:"s3,omitempty"`
-	Iceberg    *Iceberg    `yaml:"iceberg,omitempty"`
+	BigQuery   *BigQuery    `yaml:"bigquery,omitempty"`
+	Databricks *Databricks  `yaml:"databricks,omitempty"`
+	MSSQL      *MSSQL       `yaml:"mssql,omitempty"`
+	Postgres   *Postgres    `yaml:"postgres,omitempty"`
+	Snowflake  *Snowflake   `yaml:"snowflake,omitempty"`
+	Redshift   *Redshift    `yaml:"redshift,omitempty"`
+	S3         *S3Settings  `yaml:"s3,omitempty"`
+	GCS        *GCSSettings `yaml:"gcs,omitempty"`
+	Iceberg    *Iceberg     `yaml:"iceberg,omitempty"`
+	MotherDuck *MotherDuck  `yaml:"motherduck,omitempty"`
+	Redis      *Redis       `yaml:"redis,omitempty"`
 
 	SharedDestinationSettings SharedDestinationSettings `yaml:"sharedDestinationSettings"`
+	StagingTableReuse         *StagingTableReuseConfig  `yaml:"stagingTableReuse,omitempty"`
 	Reporting                 Reporting                 `yaml:"reporting"`
 	Telemetry                 struct {
 		Metrics struct {
@@ -76,4 +104,15 @@ type Config struct {
 			Settings map[string]any         `yaml:"settings,omitempty"`
 		}
 	}
+
+	// [WebhookSettings] - This will enable the webhook settings for the transfer.
+	WebhookSettings *WebhookSettings `yaml:"webhookSettings,omitempty"`
+}
+
+type WebhookSettings struct {
+	Enabled    bool                `yaml:"enabled"`
+	URL        string              `yaml:"url"`
+	APIKey     string              `yaml:"apiKey"`
+	Properties map[string]any      `yaml:"properties,omitempty"`
+	Source     webhooksutil.Source `yaml:"source"`
 }

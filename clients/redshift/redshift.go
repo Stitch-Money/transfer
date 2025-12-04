@@ -51,8 +51,8 @@ func (s *Store) BuildCredentialsClause(ctx context.Context) (string, error) {
 }
 
 func (s *Store) DropTable(ctx context.Context, tableID sql.TableIdentifier) error {
-	if !tableID.AllowToDrop() {
-		return fmt.Errorf("table %q is not allowed to be dropped", tableID.FullyQualifiedName())
+	if !tableID.TemporaryTable() {
+		return fmt.Errorf("table %q is not a temporary table, so it cannot be dropped", tableID.FullyQualifiedName())
 	}
 
 	if _, err := s.ExecContext(ctx, s.Dialect().BuildDropTableQuery(tableID)); err != nil {
@@ -64,16 +64,24 @@ func (s *Store) DropTable(ctx context.Context, tableID sql.TableIdentifier) erro
 	return nil
 }
 
+func (s *Store) TruncateTable(ctx context.Context, tableID sql.TableIdentifier) error {
+	if !tableID.TemporaryTable() {
+		return fmt.Errorf("table %q is not a temporary table, so it cannot be truncated", tableID.FullyQualifiedName())
+	}
+
+	if _, err := s.ExecContext(ctx, s.Dialect().BuildTruncateTableQuery(tableID)); err != nil {
+		return fmt.Errorf("failed to truncate table: %w", err)
+	}
+
+	return nil
+}
+
 func (s *Store) Append(ctx context.Context, tableData *optimization.TableData, _ bool) error {
 	return shared.Append(ctx, s, tableData, types.AdditionalSettings{})
 }
 
 func (s *Store) Merge(ctx context.Context, tableData *optimization.TableData) (bool, error) {
-	if err := shared.Merge(ctx, s, tableData, types.MergeOpts{
-		// We are adding SELECT DISTINCT here for the temporary table as an extra guardrail.
-		// Redshift does not enforce any row uniqueness and there could be potential LOAD errors which will cause duplicate rows to arise.
-		SubQueryDedupe: true,
-	}); err != nil {
+	if err := shared.Merge(ctx, s, tableData, types.MergeOpts{}); err != nil {
 		return false, fmt.Errorf("failed to merge: %w", err)
 	}
 
@@ -165,7 +173,7 @@ func LoadRedshift(ctx context.Context, cfg config.Config, _store *db.Store) (*St
 			return nil, err
 		}
 
-		creds, err := awslib.GenerateSTSCredentials(ctx, os.Getenv("AWS_ACCESS_KEY_ID"), os.Getenv("AWS_SECRET_ACCESS_KEY"), cfg.Redshift.RoleARN, "ArtieTransfer")
+		creds, err := awslib.GenerateSTSCredentials(ctx, os.Getenv("AWS_ACCESS_KEY_ID"), os.Getenv("AWS_SECRET_ACCESS_KEY"), cfg.Redshift.RoleARN, "ArtieTransfer", awslib.OptionalParams{})
 		if err != nil {
 			return nil, err
 		}

@@ -12,6 +12,10 @@ import (
 
 type RedshiftDialect struct{}
 
+func (RedshiftDialect) ReservedColumnNames() map[string]bool {
+	return nil
+}
+
 func (rd RedshiftDialect) QuoteIdentifier(identifier string) string {
 	// Preserve the existing behavior of Redshift identifiers being lowercased due to not being quoted.
 	return fmt.Sprintf(`"%s"`, strings.ToLower(strings.ReplaceAll(identifier, `"`, ``)))
@@ -59,10 +63,6 @@ COALESCE(
 	default:
 		return fmt.Sprintf(`COALESCE(%s NOT LIKE '%s', TRUE)`, colName, toastedValue)
 	}
-}
-
-func (rd RedshiftDialect) BuildDedupeTableQuery(tableID sql.TableIdentifier, _ []string) string {
-	return fmt.Sprintf(`( SELECT DISTINCT * FROM %s )`, tableID.FullyQualifiedName())
 }
 
 func (rd RedshiftDialect) BuildDedupeQueries(tableID, stagingTableID sql.TableIdentifier, primaryKeys []string, includeArtieUpdatedAt bool) []string {
@@ -167,7 +167,8 @@ func (rd RedshiftDialect) buildMergeUpdateQueries(
 			tableID.FullyQualifiedName(), constants.TargetAlias, sql.BuildColumnsUpdateFragment([]columns.Column{columns.NewColumn(constants.DeleteColumnMarker, typing.Boolean)}, constants.StagingAlias, constants.TargetAlias, rd),
 			// FROM staging WHERE tgt.pk = stg.pk and __artie_only_set_delete = true
 			subQuery, constants.StagingAlias, strings.Join(clauses, " AND "), sql.GetQuotedOnlySetDeleteColumnMarker(constants.StagingAlias, rd),
-		)}
+		),
+	}
 }
 
 func (rd RedshiftDialect) buildMergeDeleteQuery(tableID sql.TableIdentifier, subQuery string, primaryKeys []columns.Column) string {
@@ -218,7 +219,7 @@ func (rd RedshiftDialect) BuildIncreaseStringPrecisionQuery(tableID sql.TableIde
 	return fmt.Sprintf("ALTER TABLE %s ALTER COLUMN %s TYPE VARCHAR(%d)", tableID.FullyQualifiedName(), rd.QuoteIdentifier(columnName), newPrecision)
 }
 
-func (RedshiftDialect) BuildSweepQuery(_ string, schemaName string) (string, []any) {
+func (RedshiftDialect) BuildSweepQuery(_, schemaName string) (string, []any) {
 	// `relkind` will filter for only ordinary tables and exclude sequences, views, etc.
 	return `
 SELECT
@@ -231,7 +232,7 @@ WHERE
     n.nspname = $1 AND c.relname ILIKE $2 AND c.relkind = 'r';`, []any{schemaName, "%" + constants.ArtiePrefix + "%"}
 }
 
-func (rd RedshiftDialect) BuildCopyStatement(tableID sql.TableIdentifier, cols []string, s3URI string, credentialsClause string) string {
+func (rd RedshiftDialect) BuildCopyStatement(tableID sql.TableIdentifier, cols []string, s3URI, credentialsClause string) string {
 	quotedColumns := make([]string, len(cols))
 	for i, col := range cols {
 		quotedColumns[i] = rd.QuoteIdentifier(col)

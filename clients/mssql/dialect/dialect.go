@@ -14,6 +14,10 @@ import (
 
 type MSSQLDialect struct{}
 
+func (MSSQLDialect) ReservedColumnNames() map[string]bool {
+	return nil
+}
+
 func (MSSQLDialect) QuoteIdentifier(identifier string) string {
 	charToReplace := []string{`[`, `]`}
 	for _, char := range charToReplace {
@@ -52,10 +56,6 @@ func (md MSSQLDialect) BuildIsNotToastValueExpression(tableAlias constants.Table
 	toastedValue := "%" + constants.ToastUnavailableValuePlaceholder + "%"
 	colName := sql.QuoteTableAliasColumn(tableAlias, column, md)
 	return fmt.Sprintf("COALESCE(%s, '') NOT LIKE '%s'", colName, toastedValue)
-}
-
-func (MSSQLDialect) BuildDedupeTableQuery(_ sql.TableIdentifier, _ []string) string {
-	panic("not implemented")
 }
 
 func (MSSQLDialect) BuildDedupeQueries(tableID, stagingTableID sql.TableIdentifier, primaryKeys []string, includeArtieUpdatedAt bool) []string {
@@ -202,7 +202,7 @@ WHEN NOT MATCHED AND COALESCE(%s, 1) = 0 THEN INSERT (%s) VALUES (%s);`,
 	)}, nil
 }
 
-func (MSSQLDialect) BuildSweepQuery(_ string, schemaName string) (string, []any) {
+func (MSSQLDialect) BuildSweepQuery(_, schemaName string) (string, []any) {
 	return `
 SELECT
     TABLE_SCHEMA, TABLE_NAME

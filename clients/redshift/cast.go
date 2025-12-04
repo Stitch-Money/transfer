@@ -8,7 +8,6 @@ import (
 	"github.com/artie-labs/transfer/lib/config/constants"
 	"github.com/artie-labs/transfer/lib/typing"
 	"github.com/artie-labs/transfer/lib/typing/converters"
-	"github.com/artie-labs/transfer/lib/typing/ext"
 	"github.com/artie-labs/transfer/lib/typing/values"
 )
 
@@ -25,7 +24,7 @@ const (
 	maxSuperLength        = 16 * 1024 * 1024
 )
 
-func replaceExceededValues(colVal string, colKind typing.KindDetails, truncateExceededValue bool, expandStringPrecision bool) shared.ValueConvertResponse {
+func replaceExceededValues(colVal string, colKind typing.KindDetails, truncateExceededValue, expandStringPrecision bool) shared.ValueConvertResponse {
 	switch colKind.Kind {
 	case typing.Struct.Kind:
 		// If the value is a JSON object, we will use [maxSuperLength], else we will use [maxStringLength]
@@ -78,11 +77,18 @@ func castColValStaging(colVal any, colKind typing.KindDetails, sharedDestination
 
 	// Redshift only allows up to microsecond precision: https://docs.aws.amazon.com/redshift/latest/dg/r_Datetime_types.html
 	colValString, err := values.ToStringOpts(colVal, colKind, converters.GetStringConverterOpts{
-		TimestampTZLayoutOverride:  ext.RFC3339MicroTZ,
-		TimestampNTZLayoutOverride: ext.RFC3339MicroTZNoTZ,
+		TimestampTZLayoutOverride:  typing.RFC3339MicroTZ,
+		TimestampNTZLayoutOverride: typing.RFC3339MicroTZNoTZ,
 	})
-
 	if err != nil {
+		if sharedDestinationSettings.SkipBadIntegers {
+			if parseError, ok := typing.BuildParseError(err); ok {
+				if parseError.GetKind() == typing.UnexpectedValue {
+					return shared.ValueConvertResponse{Value: constants.NullValuePlaceholder}, nil
+				}
+			}
+		}
+
 		return shared.ValueConvertResponse{}, err
 	}
 

@@ -35,8 +35,8 @@ func (s Store) GetConfig() config.Config {
 }
 
 func (s Store) DropTable(ctx context.Context, tableID sql.TableIdentifier) error {
-	if !tableID.AllowToDrop() {
-		return fmt.Errorf("table %q is not allowed to be dropped", tableID.FullyQualifiedName())
+	if !tableID.TemporaryTable() {
+		return fmt.Errorf("table %q is not a temporary table, so it cannot be dropped", tableID.FullyQualifiedName())
 	}
 
 	if _, err := s.ExecContext(ctx, s.dialect().BuildDropTableQuery(tableID)); err != nil {
@@ -101,14 +101,14 @@ func (s Store) GetTableConfig(ctx context.Context, tableID sql.TableIdentifier, 
 	}.GetTableConfig(ctx)
 }
 
-func (s Store) PrepareTemporaryTable(ctx context.Context, tableData *optimization.TableData, dwh *types.DestinationTableConfig, tempTableID sql.TableIdentifier, _ sql.TableIdentifier, opts types.AdditionalSettings, createTempTable bool) error {
+func (s Store) LoadDataIntoTable(ctx context.Context, tableData *optimization.TableData, dwh *types.DestinationTableConfig, tableID, _ sql.TableIdentifier, opts types.AdditionalSettings, createTempTable bool) error {
 	if createTempTable {
-		if err := shared.CreateTempTable(ctx, s, tableData, dwh, opts.ColumnSettings, tempTableID); err != nil {
+		if err := shared.CreateTempTable(ctx, s, tableData, dwh, opts.ColumnSettings, tableID); err != nil {
 			return err
 		}
 	}
 
-	castedTempTableID, ok := tempTableID.(dialect.TableIdentifier)
+	castedTempTableID, ok := tableID.(dialect.TableIdentifier)
 	if !ok {
 		return fmt.Errorf("failed to cast temp table ID to TableIdentifier")
 	}
@@ -154,7 +154,7 @@ func (s Store) PrepareTemporaryTable(ctx context.Context, tableData *optimizatio
 		targetColumns = append(targetColumns, column.Name())
 	}
 
-	copyCommand := s.dialect().BuildCopyIntoQuery(tempTableID, targetColumns, sourceColumns, file.DBFSFilePath())
+	copyCommand := s.dialect().BuildCopyIntoQuery(tableID, targetColumns, sourceColumns, file.DBFSFilePath())
 	result, err := s.ExecContext(ctx, copyCommand)
 	if err != nil {
 		return fmt.Errorf("failed to run COPY INTO for temporary table: %w", err)

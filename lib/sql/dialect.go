@@ -20,13 +20,16 @@ const (
 type TableIdentifier interface {
 	EscapedTable() string
 	Table() string
+	Schema() string
 	WithTable(table string) TableIdentifier
 	FullyQualifiedName() string
-	WithDisableDropProtection(disableDropProtection bool) TableIdentifier
-	AllowToDrop() bool
+	WithTemporaryTable(temp bool) TableIdentifier
+	TemporaryTable() bool
 }
 
 type Dialect interface {
+	// ReservedColumnNames - This is a map of column names that are reserved by the SQL Dialect. This needs to be all in lowercase.
+	ReservedColumnNames() map[string]bool
 	QuoteIdentifier(identifier string) string
 	EscapeStruct(value string) string
 	DataTypeForKind(kd typing.KindDetails, isPk bool, settings config.SharedDestinationColumnSettings) (string, error)
@@ -38,7 +41,6 @@ type Dialect interface {
 	BuildDropTableQuery(tableID TableIdentifier) string
 	BuildTruncateTableQuery(tableID TableIdentifier) string
 	BuildDedupeQueries(tableID, stagingTableID TableIdentifier, primaryKeys []string, includeArtieUpdatedAt bool) []string
-	BuildDedupeTableQuery(tableID TableIdentifier, primaryKeys []string) string
 	BuildDescribeTableQuery(tableID TableIdentifier) (string, []any, error)
 	BuildIsNotToastValueExpression(tableAlias constants.TableAlias, column columns.Column) string
 	BuildMergeQueryIntoStagingTable(tableID TableIdentifier, subQuery string, primaryKeys []columns.Column, additionalEqualityStrings []string, cols []columns.Column) []string

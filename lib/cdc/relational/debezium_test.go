@@ -8,9 +8,10 @@ import (
 	"github.com/artie-labs/transfer/lib/config/constants"
 	"github.com/artie-labs/transfer/lib/typing/converters"
 
+	"github.com/stretchr/testify/assert"
+
 	"github.com/artie-labs/transfer/lib/kafkalib"
 	"github.com/artie-labs/transfer/lib/typing"
-	"github.com/stretchr/testify/assert"
 )
 
 var validTc = kafkalib.TopicConfig{
@@ -24,7 +25,7 @@ func (r *RelationTestSuite) TestGetEventFromBytesTombstone() {
 
 func (r *RelationTestSuite) TestGetPrimaryKey() {
 	valString := `{"id": 47}`
-	pkMap, err := r.GetPrimaryKey([]byte(valString), validTc)
+	pkMap, err := r.GetPrimaryKey([]byte(valString), validTc, nil)
 	assert.NoError(r.T(), err)
 
 	val, ok := pkMap["id"]
@@ -35,7 +36,7 @@ func (r *RelationTestSuite) TestGetPrimaryKey() {
 
 func (r *RelationTestSuite) TestGetPrimaryKeyUUID() {
 	valString := `{"uuid": "ca0cefe9-45cf-44fa-a2ab-ec5e7e5522a3"}`
-	pkMap, err := r.GetPrimaryKey([]byte(valString), validTc)
+	pkMap, err := r.GetPrimaryKey([]byte(valString), validTc, nil)
 	val, ok := pkMap["uuid"]
 	assert.True(r.T(), ok)
 	assert.Equal(r.T(), val, "ca0cefe9-45cf-44fa-a2ab-ec5e7e5522a3")
@@ -548,7 +549,7 @@ func (r *RelationTestSuite) TestGetEventFromBytes_MySQL() {
 	assert.Equal(r.T(), int64(1001), evtData["id"])
 	assert.Equal(r.T(), "Sally", evtData["first_name"])
 	assert.Equal(r.T(), false, evtData["bool_test"])
-	cols, err := evt.GetColumns()
+	cols, err := evt.GetColumns(nil)
 	assert.NoError(r.T(), err)
 	assert.NotNil(r.T(), cols)
 

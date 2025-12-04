@@ -5,7 +5,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/artie-labs/transfer/lib/artie"
 	"github.com/artie-labs/transfer/lib/config"
 	"github.com/artie-labs/transfer/lib/config/constants"
 	"github.com/artie-labs/transfer/lib/kafkalib"
@@ -50,13 +49,10 @@ type TableData struct {
 	primaryKeys []string
 
 	topicConfig kafkalib.TopicConfig
-	// Partition to the latest offset(s).
-	// For Kafka, we only need the last message to commit the offset
-	PartitionsToLastMessage map[int]artie.Message
 
-	// This is used for the automatic schema detection
-	LatestCDCTs time.Time
-	approxSize  int
+	// [latestTimestamp] - This property is used for the automatic schema detection
+	latestTimestamp time.Time
+	approxSize      int
 	// containOtherOperations - this means the `TableData` object contains other events that arises from CREATE, UPDATE, REPLICATION
 	// if this value is false, that means it is only deletes. Which means we should not drop columns
 	containOtherOperations bool
@@ -71,6 +67,14 @@ type TableData struct {
 
 	// Name of the table in the destination
 	name string
+}
+
+func (t *TableData) SetLatestTimestamp(timestamp time.Time) {
+	t.latestTimestamp = timestamp
+}
+
+func (t *TableData) GetLatestTimestamp() time.Time {
+	return t.latestTimestamp
 }
 
 func (t *TableData) MultiStepMergeSettings() MultiStepMergeSettings {
@@ -150,9 +154,8 @@ func NewTableData(inMemoryColumns *columns.Columns, mode config.Mode, primaryKey
 		primaryKeys:     primaryKeys,
 		topicConfig:     topicConfig,
 		// temporaryTableSuffix is being set in `ResetTempTableSuffix`
-		temporaryTableSuffix:    "",
-		PartitionsToLastMessage: map[int]artie.Message{},
-		name:                    name,
+		temporaryTableSuffix: "",
+		name:                 name,
 	}
 
 	if multiStepMergeSettings := topicConfig.MultiStepMergeSettings; multiStepMergeSettings != nil {
@@ -204,7 +207,6 @@ func (t *TableData) InsertRow(pk string, rowData map[string]any, delete bool) {
 					rowData[key] = prevVal
 				}
 			}
-
 		}
 	}
 
@@ -343,7 +345,7 @@ func (t *TableData) MergeColumnsFromDestination(destCols ...columns.Column) erro
 }
 
 // mergeColumn - This function will merge the in-memory column with the destination column.
-func mergeColumn(inMemoryCol columns.Column, destCol columns.Column) columns.Column {
+func mergeColumn(inMemoryCol, destCol columns.Column) columns.Column {
 	inMemoryCol.KindDetails.Kind = destCol.KindDetails.Kind
 	// Copy over backfilled
 	inMemoryCol.SetBackfilled(destCol.Backfilled())

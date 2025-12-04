@@ -1,6 +1,7 @@
 package consumer
 
 import (
+	"context"
 	"fmt"
 	"sync"
 
@@ -38,11 +39,10 @@ func (f *FlushTestSuite) TestMemoryBasic() {
 			"hi":                                "hello",
 		}, nil)
 
-		evt, err := event.ToMemoryEvent(mockEvent, map[string]any{"id": fmt.Sprintf("pk-%d", i)}, topicConfig, config.Replication)
+		evt, err := event.ToMemoryEvent(f.T().Context(), f.baseline, mockEvent, map[string]any{"id": fmt.Sprintf("pk-%d", i)}, topicConfig, config.Replication)
 		assert.NoError(f.T(), err)
 
-		kafkaMsg := kafka.Message{Partition: 1, Offset: 1}
-		_, _, err = evt.Save(f.cfg, f.db, topicConfig, artie.NewMessage(kafkaMsg))
+		_, _, err = evt.Save(f.cfg, f.db, topicConfig, nil)
 		assert.NoError(f.T(), err)
 
 		td := f.db.GetOrCreateTableData(expectedTableID, topicConfig.Topic)
@@ -68,11 +68,10 @@ func (f *FlushTestSuite) TestShouldFlush() {
 			"cat":                               "dog",
 		}, nil)
 
-		evt, err := event.ToMemoryEvent(mockEvent, map[string]any{"id": fmt.Sprintf("pk-%d", i)}, kafkalib.TopicConfig{}, config.Replication)
+		evt, err := event.ToMemoryEvent(f.T().Context(), f.baseline, mockEvent, map[string]any{"id": fmt.Sprintf("pk-%d", i)}, kafkalib.TopicConfig{}, config.Replication)
 		assert.NoError(f.T(), err)
 
-		kafkaMsg := kafka.Message{Partition: 1, Offset: int64(i)}
-		flush, flushReason, err = evt.Save(f.cfg, f.db, topicConfig, artie.NewMessage(kafkaMsg))
+		flush, flushReason, err = evt.Save(f.cfg, f.db, topicConfig, nil)
 		assert.NoError(f.T(), err)
 
 		if flush {
@@ -85,6 +84,10 @@ func (f *FlushTestSuite) TestShouldFlush() {
 }
 
 func (f *FlushTestSuite) TestMemoryConcurrency() {
+	topicName := "foo"
+	consumer := kafkalib.NewConsumerProviderForTest(f.fakeConsumer, topicName, "test-group")
+	ctx := context.WithValue(f.T().Context(), kafkalib.BuildContextKey(topicName), consumer)
+
 	tableIDs := []cdc.TableID{
 		cdc.NewTableID("public", "dusty"),
 		cdc.NewTableID("public", "snowflake"),
@@ -109,11 +112,13 @@ func (f *FlushTestSuite) TestMemoryConcurrency() {
 					"cat":                               "dog",
 				}, nil)
 
-				evt, err := event.ToMemoryEvent(mockEvent, map[string]any{"id": fmt.Sprintf("pk-%d", i)}, kafkalib.TopicConfig{Schema: tableID.Schema, Topic: topicConfig.Topic}, config.Replication)
+				evt, err := event.ToMemoryEvent(f.T().Context(), f.baseline, mockEvent, map[string]any{"id": fmt.Sprintf("pk-%d", i)}, kafkalib.TopicConfig{Schema: tableID.Schema, Topic: topicConfig.Topic}, config.Replication)
 				assert.NoError(f.T(), err)
 
 				kafkaMsg := kafka.Message{Partition: 1, Offset: int64(i)}
-				_, _, err = evt.Save(f.cfg, f.db, topicConfig, artie.NewMessage(kafkaMsg))
+				msg := artie.NewKafkaGoMessage(kafkaMsg)
+				consumer.SetPartitionToAppliedOffsetTest(msg)
+				_, _, err = evt.Save(f.cfg, f.db, topicConfig, nil)
 				assert.NoError(f.T(), err)
 			}
 		}(tableIDs[idx])
@@ -128,14 +133,14 @@ func (f *FlushTestSuite) TestMemoryConcurrency() {
 	}
 
 	f.fakeBaseline.MergeReturns(true, nil)
-	assert.NoError(f.T(), Flush(f.T().Context(), f.db, f.baseline, metrics.NullMetricsProvider{}, Args{}))
-	assert.Equal(f.T(), f.fakeConsumer.CommitMessagesCallCount(), len(tableIDs)) // Commit 3 times because 3 topics.
+	assert.NoError(f.T(), Flush(ctx, f.db, f.baseline, metrics.NullMetricsProvider{}, []string{topicName}, Args{Reason: "testing"}))
+	assert.Equal(f.T(), f.fakeConsumer.CommitMessagesCallCount(), 1) // Commit only once because it's the same topic.
 
 	for i := range f.fakeConsumer.CommitMessagesCallCount() {
 		_, kafkaMessages := f.fakeConsumer.CommitMessagesArgsForCall(i)
 		assert.Equal(f.T(), len(kafkaMessages), 1) // There's only 1 partition right now
 
 		// Within each partition, the offset should be 4 (i < 5 from above).
-		assert.Equal(f.T(), kafkaMessages[0].Offset, int64(4))
+		assert.Equal(f.T(), kafkaMessages[0].Offset(), int64(4))
 	}
 }

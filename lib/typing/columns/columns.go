@@ -13,14 +13,29 @@ import (
 	"github.com/artie-labs/transfer/lib/typing"
 )
 
-func EscapeName(name string) string {
+var specialCharacters = []string{"#"}
+
+func EscapeName(name string, reservedColumnNames map[string]bool) string {
+	if len(name) == 0 {
+		return ""
+	}
+
 	// Lowercasing and escaping spaces.
 	_, name = stringutil.EscapeSpaces(strings.ToLower(name))
-
 	// Does the column name start with a number? If so, let's prefix `col_` to the column name.
 	// We're doing this most databases do not allow column names to start with a number.
 	if _, err := strconv.Atoi(string(name[0])); err == nil {
 		name = "col_" + name
+	}
+
+	for _, specialCharacter := range specialCharacters {
+		if strings.Contains(name, specialCharacter) {
+			name = strings.ReplaceAll(name, specialCharacter, "__")
+		}
+	}
+
+	if _, ok := reservedColumnNames[name]; ok {
+		name = fmt.Sprintf("col_%s", name)
 	}
 
 	return name
@@ -72,6 +87,7 @@ func (c *Column) SetBackfilled(backfilled bool) {
 func (c *Column) Backfilled() bool {
 	return c.backfilled
 }
+
 func (c *Column) SetDefaultValue(value any) {
 	c.defaultValue = value
 }

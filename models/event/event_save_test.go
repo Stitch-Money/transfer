@@ -9,12 +9,11 @@ import (
 	"github.com/artie-labs/transfer/lib/mocks"
 	"github.com/artie-labs/transfer/lib/typing/columns"
 
-	"github.com/artie-labs/transfer/lib/artie"
+	"github.com/stretchr/testify/assert"
+
 	"github.com/artie-labs/transfer/lib/config/constants"
 	"github.com/artie-labs/transfer/lib/kafkalib"
 	"github.com/artie-labs/transfer/lib/typing"
-	"github.com/segmentio/kafka-go"
-	"github.com/stretchr/testify/assert"
 )
 
 var topicConfig = kafkalib.TopicConfig{
@@ -40,10 +39,10 @@ func (e *EventsTestSuite) TestSaveEvent() {
 		anotherCol:                          13.37,
 	}, nil)
 
-	event, err := ToMemoryEvent(mockEvent, map[string]any{"id": "123"}, topicConfig, config.Replication)
+	event, err := ToMemoryEvent(e.T().Context(), e.fakeBaseline, mockEvent, map[string]any{"id": "123"}, topicConfig, config.Replication)
 	assert.NoError(e.T(), err)
 
-	_, _, err = event.Save(e.cfg, e.db, topicConfig, artie.NewMessage(kafka.Message{}))
+	_, _, err = event.Save(e.cfg, e.db, topicConfig, nil)
 	assert.NoError(e.T(), err)
 
 	optimization := e.db.GetOrCreateTableData(event.GetTableID(), topicConfig.Topic)
@@ -74,7 +73,7 @@ func (e *EventsTestSuite) TestSaveEvent() {
 		},
 	}
 
-	_, _, err = edgeCaseEvent.Save(e.cfg, e.db, topicConfig, artie.NewMessage(kafka.Message{}))
+	_, _, err = edgeCaseEvent.Save(e.cfg, e.db, topicConfig, nil)
 	assert.NoError(e.T(), err)
 
 	td := e.db.GetOrCreateTableData(edgeCaseEvent.GetTableID(), topicConfig.Topic)
@@ -94,10 +93,10 @@ func (e *EventsTestSuite) TestEvent_SaveCasing() {
 		"anotherCOL":                        13.37,
 	}, nil)
 
-	event, err := ToMemoryEvent(mockEvent, map[string]any{"id": "123"}, topicConfig, config.Replication)
+	event, err := ToMemoryEvent(e.T().Context(), e.fakeBaseline, mockEvent, map[string]any{"id": "123"}, topicConfig, config.Replication)
 	assert.NoError(e.T(), err)
 
-	_, _, err = event.Save(e.cfg, e.db, topicConfig, artie.NewMessage(kafka.Message{}))
+	_, _, err = event.Save(e.cfg, e.db, topicConfig, nil)
 	assert.NoError(e.T(), err)
 
 	td := e.db.GetOrCreateTableData(event.GetTableID(), topicConfig.Topic)
@@ -114,7 +113,6 @@ func (e *EventsTestSuite) TestEvent_SaveCasing() {
 		_, ok := rowData[expectedColumn]
 		assert.True(e.T(), ok, fmt.Sprintf("expected col: %s, rowsData: %v", expectedColumn, rowData))
 	}
-
 }
 
 func (e *EventsTestSuite) TestEventSaveOptionalSchema() {
@@ -136,11 +134,10 @@ func (e *EventsTestSuite) TestEventSaveOptionalSchema() {
 		"json_object_string":     typing.String,
 	}, nil)
 
-	event, err := ToMemoryEvent(mockEvent, map[string]any{"id": "123"}, topicConfig, config.Replication)
+	event, err := ToMemoryEvent(e.T().Context(), e.fakeBaseline, mockEvent, map[string]any{"id": "123"}, topicConfig, config.Replication)
 	assert.NoError(e.T(), err)
 
-	kafkaMsg := kafka.Message{}
-	_, _, err = event.Save(e.cfg, e.db, topicConfig, artie.NewMessage(kafkaMsg))
+	_, _, err = event.Save(e.cfg, e.db, topicConfig, nil)
 	assert.NoError(e.T(), err)
 
 	td := e.db.GetOrCreateTableData(event.GetTableID(), topicConfig.Topic)
@@ -184,10 +181,10 @@ func (e *EventsTestSuite) TestEvent_SaveColumnsNoData() {
 	}, nil)
 	mockEvent.GetColumnsReturns(&cols, nil)
 
-	evt, err := ToMemoryEvent(mockEvent, map[string]any{"col_1": "123"}, topicConfig, config.Replication)
+	evt, err := ToMemoryEvent(e.T().Context(), e.fakeBaseline, mockEvent, map[string]any{"col_1": "123"}, topicConfig, config.Replication)
 	assert.NoError(e.T(), err)
 
-	_, _, err = evt.Save(e.cfg, e.db, topicConfig, artie.NewMessage(kafka.Message{}))
+	_, _, err = evt.Save(e.cfg, e.db, topicConfig, nil)
 	assert.NoError(e.T(), err)
 
 	td := e.db.GetOrCreateTableData(evt.GetTableID(), topicConfig.Topic)
@@ -243,10 +240,10 @@ func (e *EventsTestSuite) TestEventSaveColumns() {
 		"created_at_date_string":            "2023-01-01",
 	}, nil)
 
-	event, err := ToMemoryEvent(mockEvent, map[string]any{"id": "123"}, topicConfig, config.Replication)
+	event, err := ToMemoryEvent(e.T().Context(), e.fakeBaseline, mockEvent, map[string]any{"id": "123"}, topicConfig, config.Replication)
 	assert.NoError(e.T(), err)
 
-	_, _, err = event.Save(e.cfg, e.db, topicConfig, artie.NewMessage(kafka.Message{}))
+	_, _, err = event.Save(e.cfg, e.db, topicConfig, nil)
 	assert.NoError(e.T(), err)
 
 	td := e.db.GetOrCreateTableData(event.GetTableID(), topicConfig.Topic)
@@ -292,15 +289,15 @@ func (e *EventsTestSuite) TestEventSaveTestDeleteFlag() {
 		constants.OnlySetDeleteColumnMarker: true,
 	}, nil)
 
-	event, err := ToMemoryEvent(mockEvent, map[string]any{"id": "123"}, topicConfig, config.Replication)
+	event, err := ToMemoryEvent(e.T().Context(), e.fakeBaseline, mockEvent, map[string]any{"id": "123"}, topicConfig, config.Replication)
 	assert.NoError(e.T(), err)
-	_, _, err = event.Save(e.cfg, e.db, topicConfig, artie.NewMessage(kafka.Message{}))
+	_, _, err = event.Save(e.cfg, e.db, topicConfig, nil)
 	assert.NoError(e.T(), err)
 	assert.False(e.T(), e.db.GetOrCreateTableData(event.GetTableID(), topicConfig.Topic).ContainOtherOperations())
 	assert.True(e.T(), e.db.GetOrCreateTableData(event.GetTableID(), topicConfig.Topic).ContainsHardDeletes())
 
 	event.deleted = false
-	_, _, err = event.Save(e.cfg, e.db, topicConfig, artie.NewMessage(kafka.Message{}))
+	_, _, err = event.Save(e.cfg, e.db, topicConfig, nil)
 	assert.NoError(e.T(), err)
 	assert.True(e.T(), e.db.GetOrCreateTableData(event.GetTableID(), topicConfig.Topic).ContainOtherOperations())
 }

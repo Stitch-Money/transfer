@@ -25,6 +25,7 @@ func (p processArgs) process(ctx context.Context, cfg config.Config, inMemDB *mo
 		return cdc.TableID{}, fmt.Errorf("failed to process, topicConfig is nil")
 	}
 
+	reservedColumns := destination.BuildReservedColumnNames(dest)
 	tags := map[string]string{
 		"mode":    cfg.Mode.String(),
 		"groupID": p.GroupID,
@@ -45,21 +46,20 @@ func (p processArgs) process(ctx context.Context, cfg config.Config, inMemDB *mo
 
 	tags["database"] = topicConfig.tc.Database
 	tags["schema"] = topicConfig.tc.Schema
-
-	pkMap, err := topicConfig.GetPrimaryKey(p.Msg.Key(), topicConfig.tc)
+	pkMap, err := topicConfig.GetPrimaryKey(p.Msg.Key(), topicConfig.tc, reservedColumns)
 	if err != nil {
 		tags["what"] = "marshall_pk_err"
-		return cdc.TableID{}, fmt.Errorf("cannot unmarshall key %s: %w", string(p.Msg.Key()), err)
+		return cdc.TableID{}, fmt.Errorf("cannot unmarshal key %q: %w", string(p.Msg.Key()), err)
 	}
 
 	_event, err := topicConfig.GetEventFromBytes(p.Msg.Value())
 	if err != nil {
-		tags["what"] = "marshall_value_err"
-		return cdc.TableID{}, fmt.Errorf("cannot unmarshall event: %w", err)
+		tags["what"] = "marshal_value_err"
+		return cdc.TableID{}, fmt.Errorf("cannot unmarshal event: %w", err)
 	}
 
 	tags["op"] = string(_event.Operation())
-	evt, err := event.ToMemoryEvent(_event, pkMap, topicConfig.tc, cfg.Mode)
+	evt, err := event.ToMemoryEvent(ctx, dest, _event, pkMap, topicConfig.tc, cfg.Mode)
 	if err != nil {
 		tags["what"] = "to_mem_event_err"
 		return cdc.TableID{}, fmt.Errorf("cannot convert to memory event: %w", err)
@@ -78,17 +78,14 @@ func (p processArgs) process(ctx context.Context, cfg config.Config, inMemDB *mo
 		evt.EmitExecutionTimeLag(metricsClient)
 	}
 
-	shouldFlush, flushReason, err := evt.Save(cfg, inMemDB, topicConfig.tc, p.Msg)
+	shouldFlush, flushReason, err := evt.Save(cfg, inMemDB, topicConfig.tc, reservedColumns)
 	if err != nil {
 		tags["what"] = "save_fail"
 		return cdc.TableID{}, fmt.Errorf("event failed to save: %w", err)
 	}
 
 	if shouldFlush {
-		err = Flush(ctx, inMemDB, dest, metricsClient, Args{
-			Reason: flushReason,
-			Topic:  topicConfig.tc.Topic,
-		})
+		err = FlushSingleTopic(ctx, inMemDB, dest, metricsClient, Args{Reason: flushReason}, topicConfig.tc.Topic, false)
 		if err != nil {
 			tags["what"] = "flush_fail"
 		}

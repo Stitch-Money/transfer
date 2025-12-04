@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"strconv"
 	"strings"
 	"time"
 
@@ -12,7 +13,6 @@ import (
 	"github.com/artie-labs/transfer/lib/stringutil"
 	"github.com/artie-labs/transfer/lib/typing"
 	"github.com/artie-labs/transfer/lib/typing/decimal"
-	"github.com/artie-labs/transfer/lib/typing/ext"
 )
 
 type Converter interface {
@@ -137,7 +137,7 @@ func (StringConverter) ConvertOld(value any) (string, error) {
 type DateConverter struct{}
 
 func (DateConverter) Convert(value any) (string, error) {
-	_time, err := ext.ParseDateFromAny(value)
+	_time, err := typing.ParseDateFromAny(value)
 	if err != nil {
 		return "", fmt.Errorf("failed to cast colVal as date, colVal: '%v', err: %w", value, err)
 	}
@@ -148,12 +148,12 @@ func (DateConverter) Convert(value any) (string, error) {
 type TimeConverter struct{}
 
 func (TimeConverter) Convert(value any) (string, error) {
-	_time, err := ext.ParseTimeFromAny(value)
+	_time, err := typing.ParseTimeFromAny(value)
 	if err != nil {
 		return "", fmt.Errorf("failed to cast colVal as time, colVal: '%v', err: %w", value, err)
 	}
 
-	return _time.Format(ext.PostgresTimeFormatNoTZ), nil
+	return _time.Format(typing.PostgresTimeFormatNoTZ), nil
 }
 
 func NewTimestampNTZConverter(layoutOverride string) TimestampNTZConverter {
@@ -167,12 +167,12 @@ type TimestampNTZConverter struct {
 }
 
 func (t TimestampNTZConverter) Convert(value any) (string, error) {
-	_time, err := ext.ParseTimestampNTZFromAny(value)
+	_time, err := typing.ParseTimestampNTZFromAny(value)
 	if err != nil {
 		return "", fmt.Errorf("failed to cast colVal as timestampNTZ, colVal: '%v', err: %w", value, err)
 	}
 
-	return _time.Format(cmp.Or(t.layoutOverride, ext.RFC3339NoTZ)), nil
+	return _time.Format(cmp.Or(t.layoutOverride, typing.RFC3339NoTZ)), nil
 }
 
 func NewTimestampTZConverter(layoutOverride string) TimestampTZConverter {
@@ -186,7 +186,7 @@ type TimestampTZConverter struct {
 }
 
 func (t TimestampTZConverter) Convert(value any) (string, error) {
-	_time, err := ext.ParseTimestampTZFromAny(value)
+	_time, err := typing.ParseTimestampTZFromAny(value)
 	if err != nil {
 		return "", fmt.Errorf("failed to cast colVal as timestampTZ, colVal: '%v', err: %w", value, err)
 	}
@@ -227,8 +227,15 @@ func (IntegerConverter) Convert(value any) (string, error) {
 		return fmt.Sprint(parsedVal), nil
 	case *decimal.Decimal:
 		return parsedVal.String(), nil
+	case string:
+		// If it's a string, does it parse properly to an integer? If so, that's fine.
+		if _, err := strconv.ParseInt(parsedVal, 10, 64); err != nil {
+			return "", typing.NewParseError(fmt.Sprintf("unexpected value: '%v', type: %T", value, value), typing.UnexpectedValue)
+		}
+
+		return parsedVal, nil
 	default:
-		return "", fmt.Errorf("unexpected value: '%v', type: %T", value, value)
+		return "", typing.NewParseError(fmt.Sprintf("unexpected value: '%v', type: %T", value, value), typing.UnexpectedValue)
 	}
 }
 

@@ -14,6 +14,10 @@ import (
 
 type DatabricksDialect struct{}
 
+func (DatabricksDialect) ReservedColumnNames() map[string]bool {
+	return nil
+}
+
 func (DatabricksDialect) QuoteIdentifier(identifier string) string {
 	return fmt.Sprintf("`%s`", strings.ReplaceAll(identifier, "`", ""))
 }
@@ -39,10 +43,6 @@ func (d DatabricksDialect) BuildIsNotToastValueExpression(tableAlias constants.T
 	default:
 		return fmt.Sprintf("COALESCE(CAST(%s AS STRING) NOT LIKE '%s', TRUE)", colName, toastedValue)
 	}
-}
-
-func (DatabricksDialect) BuildDedupeTableQuery(tableID sql.TableIdentifier, primaryKeys []string) string {
-	panic("not implemented")
 }
 
 func (d DatabricksDialect) BuildDedupeQueries(tableID, stagingTableID sql.TableIdentifier, primaryKeys []string, includeArtieUpdatedAt bool) []string {
@@ -161,7 +161,7 @@ func (d DatabricksDialect) GetDefaultValueStrategy() sql.DefaultValueStrategy {
 	return sql.Native
 }
 
-func (d DatabricksDialect) BuildCopyIntoQuery(tempTableID sql.TableIdentifier, targetColumns []string, sourceColumns []string, filePath string) string {
+func (d DatabricksDialect) BuildCopyIntoQuery(tempTableID sql.TableIdentifier, targetColumns, sourceColumns []string, filePath string) string {
 	// Copy file from DBFS -> table via COPY INTO, ref: https://docs.databricks.com/en/sql/language-manual/delta-copy-into.html
 	return fmt.Sprintf(`
 COPY INTO %s (%s)

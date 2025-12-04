@@ -5,13 +5,14 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/jackc/pgx/v5/pgconn"
+
 	"github.com/artie-labs/transfer/lib/config"
 	"github.com/artie-labs/transfer/lib/config/constants"
 	"github.com/artie-labs/transfer/lib/sql"
 	"github.com/artie-labs/transfer/lib/typing"
 	"github.com/artie-labs/transfer/lib/typing/columns"
 	"github.com/artie-labs/transfer/lib/typing/decimal"
-	"github.com/jackc/pgx/v5/pgconn"
 )
 
 const describeTableQuery = `
@@ -27,6 +28,10 @@ LEFT JOIN pg_catalog.pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attn
 WHERE c.table_schema = $1 AND c.table_name = $2;`
 
 type PostgresDialect struct{}
+
+func (PostgresDialect) ReservedColumnNames() map[string]bool {
+	return nil
+}
 
 func (PostgresDialect) QuoteIdentifier(identifier string) string {
 	return fmt.Sprintf(`"%s"`, strings.ReplaceAll(identifier, `"`, `""`))
@@ -67,10 +72,6 @@ func (PostgresDialect) BuildDedupeQueries(tableID, stagingTableID sql.TableIdent
 	panic("not implemented") // We don't currently support deduping for Postgres.
 }
 
-func (PostgresDialect) BuildDedupeTableQuery(tableID sql.TableIdentifier, primaryKeys []string) string {
-	panic("not implemented")
-}
-
 func (PostgresDialect) BuildDescribeTableQuery(tableID sql.TableIdentifier) (string, []any, error) {
 	castedTableID, err := typing.AssertType[TableIdentifier](tableID)
 	if err != nil {
@@ -81,7 +82,14 @@ func (PostgresDialect) BuildDescribeTableQuery(tableID sql.TableIdentifier) (str
 }
 
 func (p PostgresDialect) BuildIsNotToastValueExpression(tableAlias constants.TableAlias, column columns.Column) string {
-	return fmt.Sprintf("COALESCE(%s, '') NOT LIKE '%s'", sql.QuoteTableAliasColumn(tableAlias, column, p), "%"+constants.ToastUnavailableValuePlaceholder+"%")
+	quotedColumn := sql.QuoteTableAliasColumn(tableAlias, column, p)
+
+	// For JSONB columns, we need to cast to text before using NOT LIKE
+	if column.KindDetails.Kind == typing.Struct.Kind || column.KindDetails.Kind == typing.Array.Kind {
+		return fmt.Sprintf("COALESCE(%s::text, '') NOT LIKE '%s'", quotedColumn, "%"+constants.ToastUnavailableValuePlaceholder+"%")
+	}
+
+	return fmt.Sprintf("COALESCE(%s, '') NOT LIKE '%s'", quotedColumn, "%"+constants.ToastUnavailableValuePlaceholder+"%")
 }
 
 func (PostgresDialect) GetDefaultValueStrategy() sql.DefaultValueStrategy {
@@ -213,13 +221,15 @@ func (PostgresDialect) DataTypeForKind(kd typing.KindDetails, isPk bool, setting
 	switch kd.Kind {
 	case typing.Integer.Kind:
 		if kd.OptionalIntegerKind == nil {
-			return "integer", nil
+			return "bigint", nil
 		}
 
 		switch *kd.OptionalIntegerKind {
+		case typing.NotSpecifiedKind:
+			return "bigint", nil
 		case typing.SmallIntegerKind:
 			return "smallint", nil
-		case typing.NotSpecifiedKind, typing.IntegerKind:
+		case typing.IntegerKind:
 			return "integer", nil
 		case typing.BigIntegerKind:
 			return "bigint", nil
@@ -313,6 +323,6 @@ func StripPrecision(s string) (string, string) {
 	return s, metadata
 }
 
-func (PostgresDialect) BuildSweepQuery(_ string, schema string) (string, []any) {
+func (PostgresDialect) BuildSweepQuery(_, schema string) (string, []any) {
 	return `SELECT table_schema, table_name FROM information_schema.tables WHERE table_schema = $1 AND table_name LIKE $2`, []any{schema, "%" + constants.ArtiePrefix + "%"}
 }

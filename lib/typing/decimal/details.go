@@ -27,7 +27,7 @@ func (d Details) NotSet() bool {
 	return d.precision == PrecisionNotSpecified && d.scale == DefaultScale
 }
 
-func NewDetails(precision int32, scale int32) Details {
+func NewDetails(precision, scale int32) Details {
 	if precision == 0 {
 		// MySQL, PostgreSQL, and SQLServer do not allow a zero precision, so this should never happen.
 		// Let's log if we observe it happening, and if we don't see it in the logs then we can use zero as the
@@ -108,4 +108,16 @@ func (d Details) PostgresKind() string {
 	}
 
 	return fmt.Sprintf("NUMERIC(%d, %d)", d.precision, d.scale)
+}
+
+func (d Details) DuckDBKind() string {
+	if d.precision == PrecisionNotSpecified {
+		return "DECIMAL"
+	}
+
+	if d.precision > MaxPrecisionBeforeString {
+		return "TEXT"
+	}
+
+	return fmt.Sprintf("DECIMAL(%d, %d)", d.precision, d.scale)
 }

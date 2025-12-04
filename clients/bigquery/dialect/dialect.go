@@ -23,6 +23,10 @@ func BQExpiresDate(time time.Time) string {
 
 type BigQueryDialect struct{}
 
+func (BigQueryDialect) ReservedColumnNames() map[string]bool {
+	return nil
+}
+
 func (BigQueryDialect) QuoteIdentifier(identifier string) string {
 	// BigQuery needs backticks to quote.
 	return fmt.Sprintf("`%s`", strings.ReplaceAll(identifier, "`", ""))
@@ -37,25 +41,17 @@ func (BigQueryDialect) IsColumnAlreadyExistsErr(err error) bool {
 	return strings.Contains(err.Error(), "Column already exists")
 }
 
-func (BigQueryDialect) IsTableDoesNotExistErr(_ error) bool {
-	return false
+func (BigQueryDialect) IsTableDoesNotExistErr(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	return strings.Contains(err.Error(), "not found")
 }
 
 func (bd BigQueryDialect) BuildIsNotToastValueExpression(tableAlias constants.TableAlias, column columns.Column) string {
 	colName := sql.QuoteTableAliasColumn(tableAlias, column, bd)
 	return fmt.Sprintf(`TO_JSON_STRING(%s) NOT LIKE '%s'`, colName, "%"+constants.ToastUnavailableValuePlaceholder+"%")
-}
-
-func (bd BigQueryDialect) BuildDedupeTableQuery(tableID sql.TableIdentifier, primaryKeys []string) string {
-	primaryKeysEscaped := sql.QuoteIdentifiers(primaryKeys, bd)
-
-	// BigQuery does not like DISTINCT for JSON columns, so we wrote this instead.
-	// Error: Column foo of type JSON cannot be used in SELECT DISTINCT
-	return fmt.Sprintf(`(SELECT * FROM %s QUALIFY ROW_NUMBER() OVER (PARTITION BY %s ORDER BY %s) = 1)`,
-		tableID.FullyQualifiedName(),
-		strings.Join(primaryKeysEscaped, ", "),
-		strings.Join(primaryKeysEscaped, ", "),
-	)
 }
 
 func (bd BigQueryDialect) BuildDedupeQueries(tableID, stagingTableID sql.TableIdentifier, primaryKeys []string, includeArtieUpdatedAt bool) []string {

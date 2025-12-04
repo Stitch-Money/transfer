@@ -3,20 +3,15 @@ package consumer
 import (
 	"testing"
 
+	"github.com/stretchr/testify/suite"
+
 	"github.com/artie-labs/transfer/lib/config"
 	"github.com/artie-labs/transfer/lib/config/constants"
 	"github.com/artie-labs/transfer/lib/destination"
 	"github.com/artie-labs/transfer/lib/kafkalib"
 	"github.com/artie-labs/transfer/lib/mocks"
 	"github.com/artie-labs/transfer/models"
-	"github.com/stretchr/testify/suite"
 )
-
-func SetKafkaConsumer(_topicToConsumer map[string]kafkalib.Consumer) {
-	topicToConsumer = &TopicToConsumer{
-		topicToConsumer: _topicToConsumer,
-	}
-}
 
 type FlushTestSuite struct {
 	suite.Suite
@@ -58,7 +53,6 @@ func (f *FlushTestSuite) SetupTest() {
 	f.baseline = f.fakeBaseline
 	f.db = models.NewMemoryDB()
 	f.fakeConsumer = &mocks.FakeConsumer{}
-	SetKafkaConsumer(map[string]kafkalib.Consumer{"foo": f.fakeConsumer})
 }
 
 func TestFlushTestSuite(t *testing.T) {

@@ -28,7 +28,7 @@ func TempTableIDWithSuffix(tableID sql.TableIdentifier, suffix string) sql.Table
 		suffix,
 		time.Now().Add(constants.TemporaryTableTTL).Unix(),
 	)
-	return tableID.WithTable(tempTable)
+	return tableID.WithTable(tempTable).WithTemporaryTable(true)
 }
 
 type File struct {
@@ -81,9 +81,9 @@ func (t TemporaryDataFile) WriteTemporaryTableFile(tableData *optimization.Table
 		var csvValues []string
 		for _, col := range columns {
 			value, _ := row.GetValue(col.Name())
-			result, castErr := valueConverter(value, col.KindDetails, sharedDestinationSettings)
-			if castErr != nil {
-				return File{}, AdditionalOutput{}, fmt.Errorf("failed to cast value %q: %w", col.Name(), castErr)
+			result, err := valueConverter(value, col.KindDetails, sharedDestinationSettings)
+			if err != nil {
+				return File{}, AdditionalOutput{}, fmt.Errorf("failed to cast value %q: %w", col.Name(), err)
 			}
 
 			if result.NewLength > 0 {

@@ -5,11 +5,12 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+
 	"github.com/artie-labs/transfer/lib/config/constants"
 	"github.com/artie-labs/transfer/lib/mocks"
 	"github.com/artie-labs/transfer/lib/typing"
 	"github.com/artie-labs/transfer/lib/typing/columns"
-	"github.com/stretchr/testify/assert"
 )
 
 func TestSnowflakeDialect_QuoteIdentifier(t *testing.T) {
@@ -37,7 +38,7 @@ func TestSnowflakeDialect_BuildCreateTableQuery(t *testing.T) {
 
 	// Temporary:
 	assert.Equal(t,
-		`CREATE TABLE IF NOT EXISTS {TABLE} ({PART_1},{PART_2}) DATA_RETENTION_TIME_IN_DAYS = 0 STAGE_COPY_OPTIONS = ( PURGE = TRUE ) STAGE_FILE_FORMAT = ( TYPE = 'csv' FIELD_DELIMITER= '\t' FIELD_OPTIONALLY_ENCLOSED_BY='"' NULL_IF='__artie_null_value' EMPTY_FIELD_AS_NULL=FALSE)`,
+		`CREATE TRANSIENT TABLE IF NOT EXISTS {TABLE} ({PART_1},{PART_2}) DATA_RETENTION_TIME_IN_DAYS = 0 STAGE_COPY_OPTIONS = ( PURGE = TRUE ) STAGE_FILE_FORMAT = ( TYPE = 'csv' FIELD_DELIMITER= '\t' FIELD_OPTIONALLY_ENCLOSED_BY='"' NULL_IF='__artie_null_value' EMPTY_FIELD_AS_NULL=FALSE)`,
 		SnowflakeDialect{}.BuildCreateTableQuery(fakeTableID, true, []string{"{PART_1}", "{PART_2}"}),
 	)
 	// Not temporary:
@@ -103,7 +104,6 @@ func TestSnowflakeDialect_BuildIsNotToastValueExpression(t *testing.T) {
 			SnowflakeDialect{}.BuildIsNotToastValueExpression("tbl", columns.NewColumn("bar", typing.String)),
 		)
 	}
-
 }
 
 func buildColumns(colTypesMap map[string]typing.KindDetails) *columns.Columns {
@@ -193,9 +193,9 @@ WHEN NOT MATCHED THEN INSERT ("__ARTIE_DELETE","__ARTIE_ONLY_SET_DELETE","BAR","
 			constants.OnlySetDeleteColumnMarker: typing.Boolean,
 		})
 
-		_cols.UpsertColumn("bar", columns.UpsertColumnArg{
+		assert.NoError(t, _cols.UpsertColumn("bar", columns.UpsertColumnArg{
 			ToastCol: typing.ToPtr(true),
-		})
+		}))
 
 		statements := SnowflakeDialect{}.BuildMergeQueryIntoStagingTable(
 			fakeTableID,

@@ -2,19 +2,19 @@ package event
 
 import (
 	"cmp"
+	"context"
 	"fmt"
 	"log/slog"
 	"sort"
 	"strings"
 	"time"
 
-	"github.com/artie-labs/transfer/lib/artie"
 	"github.com/artie-labs/transfer/lib/cdc"
 	"github.com/artie-labs/transfer/lib/config"
 	"github.com/artie-labs/transfer/lib/config/constants"
-	"github.com/artie-labs/transfer/lib/cryptography"
-	"github.com/artie-labs/transfer/lib/environ"
+	"github.com/artie-labs/transfer/lib/destination"
 	"github.com/artie-labs/transfer/lib/kafkalib"
+	"github.com/artie-labs/transfer/lib/maputil"
 	"github.com/artie-labs/transfer/lib/optimization"
 	"github.com/artie-labs/transfer/lib/stringutil"
 	"github.com/artie-labs/transfer/lib/telemetry/metrics/base"
@@ -45,130 +45,32 @@ func (e Event) GetTable() string {
 	return e.table
 }
 
-func transformData(data map[string]any, tc kafkalib.TopicConfig) map[string]any {
-	for _, columnToHash := range tc.ColumnsToHash {
-		if value, ok := data[columnToHash]; ok {
-			data[columnToHash] = cryptography.HashValue(value)
-		}
-	}
-
-	// Exclude certain columns
-	for _, col := range tc.ColumnsToExclude {
-		delete(data, col)
-	}
-
-	// If column inclusion is specified, then we need to include only the specified columns
-	if len(tc.ColumnsToInclude) > 0 {
-		filteredData := make(map[string]any)
-		for _, col := range tc.ColumnsToInclude {
-			if value, ok := data[col]; ok {
-				filteredData[col] = value
-			}
-		}
-
-		// Include Artie columns
-		for _, col := range constants.ArtieColumns {
-			if value, ok := data[col]; ok {
-				filteredData[col] = value
-			}
-		}
-
-		for _, col := range tc.StaticColumns {
-			filteredData[col.Name] = col.Value
-		}
-
-		return filteredData
-	}
-
-	return data
-}
-
-func buildFilteredColumns(event cdc.Event, tc kafkalib.TopicConfig) (*columns.Columns, error) {
-	cols, err := event.GetColumns()
-	if err != nil {
-		return nil, err
-	}
-
-	for _, col := range tc.ColumnsToExclude {
-		cols.DeleteColumn(col)
-	}
-
-	if len(tc.ColumnsToInclude) > 0 {
-		var filteredColumns columns.Columns
-		for _, col := range tc.ColumnsToInclude {
-			if existingColumn, ok := cols.GetColumn(col); ok {
-				filteredColumns.AddColumn(existingColumn)
-			}
-		}
-
-		for _, col := range constants.ArtieColumns {
-			if existingColumn, ok := cols.GetColumn(col); ok {
-				filteredColumns.AddColumn(existingColumn)
-			}
-		}
-
-		// If columns to include is specified, we should always include static columns.
-		for _, col := range tc.StaticColumns {
-			filteredColumns.AddColumn(columns.NewColumn(col.Name, typing.String))
-		}
-
-		return &filteredColumns, nil
-	}
-
-	// Include static columns
-	for _, col := range tc.StaticColumns {
-		cols.AddColumn(columns.NewColumn(col.Name, typing.String))
-	}
-
-	return cols, nil
-}
-
-func ToMemoryEvent(event cdc.Event, pkMap map[string]any, tc kafkalib.TopicConfig, cfgMode config.Mode) (Event, error) {
-	cols, err := buildFilteredColumns(event, tc)
+func ToMemoryEvent(ctx context.Context, dest destination.Baseline, event cdc.Event, pkMap map[string]any, tc kafkalib.TopicConfig, cfgMode config.Mode) (Event, error) {
+	reservedColumns := destination.BuildReservedColumnNames(dest)
+	cols, err := buildColumns(event, tc, reservedColumns)
 	if err != nil {
 		return Event{}, fmt.Errorf("failed to build filtered columns: %w", err)
 	}
-	// Now iterate over pkMap and tag each column that is a primary key
-	var pks []string
-	if len(tc.PrimaryKeysOverride) > 0 {
-		pks = tc.PrimaryKeysOverride
-	} else {
-		for pk := range pkMap {
-			pks = append(pks, pk)
-		}
 
-		for _, pk := range tc.IncludePrimaryKeys {
-			// If it's not already included in the [pkMap], let's add it.
-			if _, ok := pkMap[pk]; !ok {
-				pks = append(pks, pk)
-			}
-		}
-
-	}
-
+	pks := buildPrimaryKeys(tc, pkMap, reservedColumns)
 	if cols != nil {
+		// All keys in pks are already escaped, so don't escape again
 		for _, pk := range pks {
 			err = cols.UpsertColumn(
-				// We need to escape the column name similar to have parity with event.GetColumns()
-				columns.EscapeName(pk),
+				pk,
 				columns.UpsertColumnArg{
 					PrimaryKey: typing.ToPtr(true),
 				},
 			)
-
 			if err != nil {
 				return Event{}, fmt.Errorf("failed to upsert column: %w", err)
 			}
 		}
 	}
 
-	evtData, err := event.GetData(tc)
+	data, err := buildEventData(event, tc)
 	if err != nil {
-		return Event{}, fmt.Errorf("failed to get data: %w", err)
-	}
-
-	if tc.IncludeArtieOperation {
-		evtData[constants.OperationColumnMarker] = string(event.Operation())
+		return Event{}, fmt.Errorf("failed to load artie metadata: %w", err)
 	}
 
 	if tc.IncludeSourceMetadata {
@@ -177,12 +79,8 @@ func ToMemoryEvent(event cdc.Event, pkMap map[string]any, tc kafkalib.TopicConfi
 			return Event{}, fmt.Errorf("failed to get source metadata: %w", err)
 		}
 
-		evtData[constants.SourceMetadataColumnMarker] = metadata
+		data[constants.SourceMetadataColumnMarker] = metadata
 		cols.AddColumn(columns.NewColumn(constants.SourceMetadataColumnMarker, typing.Struct))
-	}
-
-	if tc.IncludeFullSourceTableName {
-		evtData[constants.FullSourceTableNameColumnMarker] = event.GetFullTableName()
 	}
 
 	tblName := cmp.Or(tc.TableName, event.GetTableName())
@@ -190,15 +88,31 @@ func ToMemoryEvent(event cdc.Event, pkMap map[string]any, tc kafkalib.TopicConfi
 		if !strings.HasSuffix(tblName, constants.HistoryModeSuffix) {
 			// History mode will include a table suffix and operation column
 			tblName += constants.HistoryModeSuffix
-			slog.Warn(fmt.Sprintf("History mode is enabled, but table name does not have a %s suffix, so we're adding it...", constants.HistoryModeSuffix), slog.String("tblName", tblName))
+			slog.Warn(fmt.Sprintf("History mode is enabled, but table name does not have a %q suffix, so we're adding it...", constants.HistoryModeSuffix), slog.String("tblName", tblName))
 		}
 
 		// If this is already set, it's a no-op.
-		evtData[constants.OperationColumnMarker] = string(event.Operation())
+		data[constants.OperationColumnMarker] = string(event.Operation())
 
 		// We don't need the deletion markers either.
-		delete(evtData, constants.DeleteColumnMarker)
-		delete(evtData, constants.OnlySetDeleteColumnMarker)
+		delete(data, constants.DeleteColumnMarker)
+		delete(data, constants.OnlySetDeleteColumnMarker)
+	} else if tc.SoftPartitioning.Enabled {
+		// TODO: cache exact match or fix upstream to pass the column name from source table
+		maybeDatetime, ok := maputil.GetCaseInsensitiveValue(data, tc.SoftPartitioning.PartitionColumn)
+		if !ok {
+			return Event{}, fmt.Errorf("partition column %q not found in data", tc.SoftPartitioning.PartitionColumn)
+		}
+		actuallyDateTime, err := typing.ParseTimestampTZFromAny(maybeDatetime)
+		if err != nil {
+			return Event{}, fmt.Errorf("failed to assert datetime: %w for table %q schema %q", err, tc.TableName, tc.Schema)
+		}
+		// TODO: clean up parameters, i.e. ctx, dest, etc
+		suffix, err := BuildSoftPartitionSuffix(ctx, tc, actuallyDateTime, event.GetExecutionTime(), tblName, dest)
+		if err != nil {
+			return Event{}, fmt.Errorf("failed to calculate soft partition suffix: %w", err)
+		}
+		tblName = tblName + suffix
 	}
 
 	optionalSchema, err := event.GetOptionalSchema()
@@ -208,16 +122,16 @@ func ToMemoryEvent(event cdc.Event, pkMap map[string]any, tc kafkalib.TopicConfi
 
 	// Static columns cannot collide with the event data.
 	for _, staticColumn := range tc.StaticColumns {
-		if _, ok := evtData[staticColumn.Name]; ok {
+		if _, ok := data[staticColumn.Name]; ok {
 			return Event{}, fmt.Errorf("static column %q collides with event data", staticColumn.Name)
 		}
 
 		// Inject static columns into the event data.
-		evtData[staticColumn.Name] = staticColumn.Value
+		data[staticColumn.Name] = staticColumn.Value
 	}
 
 	sort.Strings(pks)
-	_event := Event{
+	return Event{
 		executionTime: event.GetExecutionTime(),
 		mode:          cfgMode,
 		// [primaryKeys] needs to be sorted so that we have a deterministic way to identify a row in our in-memory db.
@@ -226,11 +140,9 @@ func ToMemoryEvent(event cdc.Event, pkMap map[string]any, tc kafkalib.TopicConfi
 		tableID:        cdc.NewTableID(tc.Schema, tblName),
 		optionalSchema: optionalSchema,
 		columns:        cols,
-		data:           transformData(evtData, tc),
+		data:           transformData(data, tc),
 		deleted:        event.DeletePayload(),
-	}
-
-	return _event, nil
+	}, nil
 }
 
 // GetData - This will return the data for the event.
@@ -286,16 +198,16 @@ func (e *Event) GetPrimaryKeys() []string {
 }
 
 // PrimaryKeyValue - as per above, this needs to return a deterministic k/v string.
+// Must only call this after the event data has been sanitized within [event.Save].
 func (e *Event) PrimaryKeyValue() (string, error) {
 	var key string
 	for _, pk := range e.GetPrimaryKeys() {
-		escapedPrimaryKey := columns.EscapeName(pk)
-		value, ok := e.data[escapedPrimaryKey]
+		value, ok := e.data[pk]
 		if !ok {
-			return "", fmt.Errorf("primary key %q not found in data: %v", escapedPrimaryKey, e.data)
+			return "", fmt.Errorf("primary key %q not found in data: %v", pk, e.data)
 		}
 
-		key += fmt.Sprintf("%s=%v", escapedPrimaryKey, value)
+		key += fmt.Sprintf("%s=%v", pk, value)
 	}
 
 	return key, nil
@@ -303,15 +215,13 @@ func (e *Event) PrimaryKeyValue() (string, error) {
 
 // Save will save the event into our in memory event
 // It will return (flush bool, flushReason string, err error)
-func (e *Event) Save(cfg config.Config, inMemDB *models.DatabaseData, tc kafkalib.TopicConfig, message artie.Message) (bool, string, error) {
+func (e *Event) Save(cfg config.Config, inMemDB *models.DatabaseData, tc kafkalib.TopicConfig, reservedColumns map[string]bool) (bool, string, error) {
 	if err := e.Validate(); err != nil {
 		return false, "", fmt.Errorf("event validation failed: %w", err)
 	}
 
 	// Does the table exist?
 	td := inMemDB.GetOrCreateTableData(e.tableID, tc.Topic)
-	td.Lock()
-	defer td.Unlock()
 	if td.Empty() {
 		cols := &columns.Columns{}
 		if e.columns != nil {
@@ -328,26 +238,12 @@ func (e *Event) Save(cfg config.Config, inMemDB *models.DatabaseData, tc kafkali
 		}
 	}
 
-	kafkaCheck, err := environ.GetBoolEnv(constants.KafkaHWMEnvVar)
-	if err != nil {
-		return false, "", fmt.Errorf("failed to get kafka check: %w", err)
-	}
-
-	if kafkaCheck {
-		if msg, ok := td.PartitionsToLastMessage[message.Partition()]; ok {
-			if msg.Offset() > message.Offset() {
-				// This means that we already processed this message.
-				return false, "", nil
-			}
-		}
-	}
-
 	// Table columns
 	inMemoryColumns := td.ReadOnlyInMemoryCols()
 	// Update col if necessary
 	sanitizedData := make(map[string]any)
 	for _col, val := range e.data {
-		newColName := columns.EscapeName(_col)
+		newColName := columns.EscapeName(_col, reservedColumns)
 		if newColName != _col {
 			// This means that the column name has changed.
 			// We need to update the column name in the sanitizedData map.
@@ -371,7 +267,6 @@ func (e *Event) Save(cfg config.Config, inMemDB *models.DatabaseData, tc kafkali
 			err := inMemoryColumns.UpsertColumn(newColName, columns.UpsertColumnArg{
 				ToastCol: typing.ToPtr(true),
 			})
-
 			if err != nil {
 				return false, "", fmt.Errorf("failed to upsert column: %w", err)
 			}
@@ -419,9 +314,7 @@ func (e *Event) Save(cfg config.Config, inMemDB *models.DatabaseData, tc kafkali
 	}
 
 	td.InsertRow(pkValueString, e.data, e.deleted)
-	// Record the last message for this partition, so we can use this for committing the offset.
-	td.PartitionsToLastMessage[message.Partition()] = message
-	td.LatestCDCTs = e.executionTime
+	td.SetLatestTimestamp(e.executionTime)
 	flush, flushReason := td.ShouldFlush(cfg)
 	return flush, flushReason, nil
 }

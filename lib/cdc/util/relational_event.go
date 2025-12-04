@@ -52,7 +52,7 @@ func shouldParseValue(value any) bool {
 	return true
 }
 
-func (s *SchemaEventPayload) GetColumns() (*columns.Columns, error) {
+func (s *SchemaEventPayload) GetColumns(reservedColumns map[string]bool) (*columns.Columns, error) {
 	fieldsObject := s.Schema.GetSchemaFromLabel(debezium.After)
 	if fieldsObject == nil {
 		// AFTER schema does not exist.
@@ -63,7 +63,7 @@ func (s *SchemaEventPayload) GetColumns() (*columns.Columns, error) {
 	for _, field := range fieldsObject.Fields {
 		// We are purposefully doing this to ensure that the correct typing is set
 		// When we invoke event.Save()
-		col := columns.NewColumn(columns.EscapeName(field.FieldName), typing.Invalid)
+		col := columns.NewColumn(columns.EscapeName(field.FieldName, reservedColumns), typing.Invalid)
 		if shouldParseValue(field.Default) {
 			val, err := field.ParseValue(field.Default)
 			if err != nil {
@@ -112,12 +112,12 @@ func (s *SchemaEventPayload) GetFullTableName() string {
 }
 
 func (s *SchemaEventPayload) GetSourceMetadata() (string, error) {
-	json, err := json.Marshal(s.Payload.Source)
+	val, err := json.Marshal(s.Payload.Source)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to marshal source metadata: %w", err)
 	}
 
-	return string(json), nil
+	return string(val), nil
 }
 
 func (s *SchemaEventPayload) GetData(tc kafkalib.TopicConfig) (map[string]any, error) {

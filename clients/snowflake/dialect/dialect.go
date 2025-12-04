@@ -13,6 +13,24 @@ import (
 
 type SnowflakeDialect struct{}
 
+// ReservedColumnNames - This is sourced from: https://docs.snowflake.com/en/sql-reference/reserved-keywords
+func (SnowflakeDialect) ReservedColumnNames() map[string]bool {
+	return map[string]bool{
+		"case":              true,
+		"cast":              true,
+		"constraint":        true,
+		"current_date":      true,
+		"current_timestamp": true,
+		"current_user":      true,
+		"false":             true,
+		"localtime":         true,
+		"localtimestamp":    true,
+		"true":              true,
+		"try_cast":          true,
+		"when":              true,
+	}
+}
+
 func (SnowflakeDialect) QuoteIdentifier(identifier string) string {
 	return fmt.Sprintf(`"%s"`, strings.ToUpper(strings.ReplaceAll(identifier, `"`, ``)))
 }
@@ -45,10 +63,6 @@ func (sd SnowflakeDialect) BuildIsNotToastValueExpression(tableAlias constants.T
 	default:
 		return fmt.Sprintf("COALESCE(TO_VARCHAR(%s) NOT LIKE '%s', TRUE)", colName, toastedValue)
 	}
-}
-
-func (SnowflakeDialect) BuildDedupeTableQuery(tableID sql.TableIdentifier, primaryKeys []string) string {
-	panic("not implemented")
 }
 
 func (sd SnowflakeDialect) BuildDedupeQueries(tableID, stagingTableID sql.TableIdentifier, primaryKeys []string, includeArtieUpdatedAt bool) []string {
@@ -182,7 +196,7 @@ WHERE
     UPPER(table_schema) = UPPER(?) AND table_name ILIKE ?`, dbName), []any{schemaName, "%" + constants.ArtiePrefix + "%"}
 }
 
-func (SnowflakeDialect) BuildRemoveFilesFromStage(stageName string, path string) string {
+func (SnowflakeDialect) BuildRemoveFilesFromStage(stageName, path string) string {
 	// https://docs.snowflake.com/en/sql-reference/sql/remove
 	return fmt.Sprintf("REMOVE @%s", filepath.Join(stageName, path))
 }
@@ -209,7 +223,7 @@ func (SnowflakeDialect) EscapeColumns(columns []columns.Column, delimiter string
 	return strings.Join(escapedCols, delimiter)
 }
 
-func (sd SnowflakeDialect) BuildCopyIntoTableQuery(tableID sql.TableIdentifier, columns []columns.Column, stageName string, fileName string) string {
+func (sd SnowflakeDialect) BuildCopyIntoTableQuery(tableID sql.TableIdentifier, columns []columns.Column, stageName, fileName string) string {
 	return fmt.Sprintf("COPY INTO %s (%s) FROM (SELECT %s FROM @%s) FILES = ('%s')",
 		// COPY INTO <table> (<columns>)
 		tableID.FullyQualifiedName(), strings.Join(sql.QuoteColumns(columns, sd), ","),

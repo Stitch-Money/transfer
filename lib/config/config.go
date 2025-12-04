@@ -18,8 +18,8 @@ const (
 	defaultFlushTimeSeconds = 10
 	defaultFlushSizeKb      = 25 * 1024 // 25 mb
 	defaultBufferPoolSize   = 30000
-	bufferPoolSizeMin       = 5
 
+	BufferPoolSizeMin       = 5
 	FlushIntervalSecondsMin = 5
 	FlushIntervalSecondsMax = 6 * 60 * 60
 )
@@ -35,6 +35,22 @@ func (s *S3Settings) Validate() error {
 
 	if !constants.IsValidS3OutputFormat(s.OutputFormat) {
 		return fmt.Errorf("invalid s3 output format %q", s.OutputFormat)
+	}
+
+	return nil
+}
+
+func (g *GCSSettings) Validate() error {
+	if g == nil {
+		return fmt.Errorf("gcs settings are nil")
+	}
+
+	if stringutil.Empty(g.Bucket) {
+		return fmt.Errorf("gcs bucket is empty")
+	}
+
+	if !constants.IsValidS3OutputFormat(g.OutputFormat) {
+		return fmt.Errorf("invalid gcs output format %q", g.OutputFormat)
 	}
 
 	return nil
@@ -71,6 +87,7 @@ func readFileToConfig(pathToConfig string) (*Config, error) {
 	config.BufferRows = cmp.Or(config.BufferRows, defaultBufferPoolSize)
 	config.FlushSizeKb = cmp.Or(config.FlushSizeKb, defaultFlushSizeKb)
 	config.Mode = cmp.Or(config.Mode, Replication)
+	config.KafkaClient = cmp.Or(config.KafkaClient, KafkaGoClient)
 
 	return &config, nil
 }
@@ -116,6 +133,34 @@ func (c Config) ValidateMSSQL() error {
 	return nil
 }
 
+func (c Config) ValidateMotherDuck() error {
+	if c.Output != constants.MotherDuck {
+		return fmt.Errorf("output is not motherduck, output: %q", c.Output)
+	}
+
+	if c.MotherDuck == nil {
+		return fmt.Errorf("MotherDuck config is nil")
+	}
+
+	if stringutil.Empty(c.MotherDuck.DucktapeURL) {
+		return fmt.Errorf("MotherDuck ducktape URL is empty")
+	}
+
+	if empty := stringutil.Empty(c.MotherDuck.Token); empty {
+		return fmt.Errorf("MotherDuck access token is empty")
+	}
+
+	return nil
+}
+
+func (c Config) ValidateRedis() error {
+	if c.Output != constants.Redis {
+		return fmt.Errorf("output is not Redis, output: %q", c.Output)
+	}
+
+	return c.Redis.Validate()
+}
+
 // Validate will check the output source validity
 // It will also check if a topic exists + iterate over each topic to make sure it's valid.
 // The actual output source (like Snowflake) and CDC parser will be loaded and checked by other funcs.
@@ -129,8 +174,8 @@ func (c Config) Validate() error {
 			c.FlushIntervalSeconds, FlushIntervalSecondsMin, FlushIntervalSecondsMax)
 	}
 
-	if bufferPoolSizeMin > int(c.BufferRows) {
-		return fmt.Errorf("buffer pool is too small, min value: %d, actual: %d", bufferPoolSizeMin, int(c.BufferRows))
+	if BufferPoolSizeMin > int(c.BufferRows) {
+		return fmt.Errorf("buffer pool is too small, min value: %d, actual: %d", BufferPoolSizeMin, int(c.BufferRows))
 	}
 
 	if !constants.IsValidDestination(c.Output) {
@@ -146,8 +191,20 @@ func (c Config) Validate() error {
 		if err := c.ValidateRedshift(); err != nil {
 			return err
 		}
+	case constants.Redis:
+		if err := c.ValidateRedis(); err != nil {
+			return err
+		}
 	case constants.S3:
 		if err := c.S3.Validate(); err != nil {
+			return err
+		}
+	case constants.GCS:
+		if err := c.GCS.Validate(); err != nil {
+			return err
+		}
+	case constants.MotherDuck:
+		if err := c.ValidateMotherDuck(); err != nil {
 			return err
 		}
 	}
@@ -182,6 +239,10 @@ func (c Config) Validate() error {
 
 			if !topicConfig.IncludeDatabaseUpdatedAt {
 				return fmt.Errorf("includeDatabaseUpdatedAt is required in history mode, topic: %s", topicConfig.String())
+			}
+
+			if topicConfig.SoftPartitioning.Enabled {
+				return fmt.Errorf("soft partitioning is not supported in history mode, topic: %s", topicConfig.String())
 			}
 		}
 

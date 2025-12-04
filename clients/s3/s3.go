@@ -75,7 +75,7 @@ func (s *Store) Append(ctx context.Context, tableData *optimization.TableData, _
 }
 
 func buildTemporaryFilePath(tableData *optimization.TableData) string {
-	return fmt.Sprintf("/tmp/%d_%s.parquet", tableData.LatestCDCTs.UnixMilli(), stringutil.Random(4))
+	return fmt.Sprintf("/tmp/%d_%s.parquet", tableData.GetLatestTimestamp().UnixMilli(), stringutil.Random(4))
 }
 
 // WriteParquetFiles writes the table data to a parquet file at the specified path using Arrow and returns an error if any step of the writing process fails.
@@ -196,10 +196,12 @@ func (s *Store) Merge(ctx context.Context, tableData *optimization.TableData) (b
 		}
 	}()
 
-	if _, err := s.s3Client.UploadLocalFileToS3(ctx, s.config.S3.Bucket, s.ObjectPrefix(tableData), fp); err != nil {
+	s3Path, err := s.s3Client.UploadLocalFileToS3(ctx, s.config.S3.Bucket, s.ObjectPrefix(tableData), fp)
+	if err != nil {
 		return false, fmt.Errorf("failed to upload file to s3: %w", err)
 	}
 
+	slog.Info("Successfully wrote and uploaded Parquet file to S3", slog.String("filePath", fp), slog.String("s3Path", s3Path))
 	return true, nil
 }
 

@@ -5,6 +5,7 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/artie-labs/transfer/lib/kafkalib/partition"
 	"github.com/artie-labs/transfer/lib/stringutil"
@@ -47,10 +48,85 @@ type StaticColumn struct {
 	Value string `yaml:"value"`
 }
 
+type PartitionFrequency string
+
+const (
+	Monthly              PartitionFrequency = "monthly"
+	Daily                PartitionFrequency = "daily"
+	Hourly               PartitionFrequency = "hourly"
+	CompactedTableSuffix string             = "_default"
+)
+
+func (pf PartitionFrequency) Layout() string {
+	switch pf {
+	case Monthly:
+		return "_2006_01"
+	case Daily:
+		return "_2006_01_02"
+	case Hourly:
+		return "_2006_01_02_15"
+	}
+	return ""
+}
+
+func (pf PartitionFrequency) Suffix(value time.Time) (string, error) {
+	layout := pf.Layout()
+	if layout == "" {
+		return "", fmt.Errorf("invalid partition frequency: %q", pf)
+	}
+
+	return value.Format(layout), nil
+}
+
+// Positive distance means the from time is in a past partition of now.
+// Negative distance means the from time is in a future partition of now.
+// 0 means the from time is in the same partitionas now.
+func (pf PartitionFrequency) PartitionDistance(from, now time.Time) int {
+	switch pf {
+	case Monthly:
+		fromYear, fromMonth, _ := from.Date()
+		nowYear, nowMonth, _ := now.Date()
+		return (nowYear-fromYear)*12 + int(nowMonth-fromMonth)
+	case Daily:
+		return int(now.Sub(from).Hours() / 24)
+	case Hourly:
+		return int(now.Sub(from).Hours())
+	}
+	return 0
+}
+
+type SoftPartitioning struct {
+	Enabled            bool               `yaml:"enabled" json:"enabled"`
+	PartitionFrequency PartitionFrequency `yaml:"partitionFrequency" json:"partitionFrequency"`
+	PartitionColumn    string             `yaml:"partitionColumn" json:"partitionColumn"`
+	PartitionSchema    string             `yaml:"partitionSchema" json:"partitionSchema"`
+	MaxPartitions      int                `yaml:"maxPartitions" json:"maxPartitions"`
+}
+
+func (sp SoftPartitioning) Validate() error {
+	if !sp.Enabled {
+		return nil
+	}
+	if sp.PartitionFrequency == "" {
+		return fmt.Errorf("partition frequency is required")
+	}
+	if _, err := sp.PartitionFrequency.Suffix(time.Now()); err != nil {
+		return fmt.Errorf("invalid partition frequency: %w", err)
+	}
+	if sp.PartitionColumn == "" {
+		return fmt.Errorf("partition column is required")
+	}
+	if sp.MaxPartitions <= 0 {
+		return fmt.Errorf("maxPartitions must be greater than 0")
+	}
+	return nil
+}
+
 type TopicConfig struct {
-	Database                   string `yaml:"db"`
+	Database string `yaml:"db"`
+	Schema   string `yaml:"schema"`
+	// [TableName] - if left empty, the table name will be deduced from each event.
 	TableName                  string `yaml:"tableName"`
-	Schema                     string `yaml:"schema"`
 	Topic                      string `yaml:"topic"`
 	CDCFormat                  string `yaml:"cdcFormat"`
 	CDCKeyFormat               string `yaml:"cdcKeyFormat"`
@@ -81,6 +157,12 @@ type TopicConfig struct {
 	// [StaticColumns] can be used to specify static columns that should be written to the destination.
 	// This is useful for cases where you want to add additional columns to provide metadata, etc in the destination.
 	StaticColumns []StaticColumn `yaml:"staticColumns,omitempty"`
+
+	// [SoftPartitioning] can be used to specify soft partitioning settings for the table.
+	SoftPartitioning SoftPartitioning `yaml:"softPartitioning,omitempty"`
+
+	// [AppendOnly] - if true, data will always be appended instead of merged.
+	AppendOnly bool `yaml:"appendOnly,omitempty"`
 
 	// Internal metadata
 	opsToSkipMap map[string]bool `yaml:"-"`
@@ -158,6 +240,10 @@ func (t TopicConfig) Validate() error {
 	// You cannot have both [PrimaryKeysOverride] and [IncludePrimaryKeys]
 	if len(t.PrimaryKeysOverride) > 0 && len(t.IncludePrimaryKeys) > 0 {
 		return fmt.Errorf("cannot specify both primaryKeysOverride and includePrimaryKeys")
+	}
+
+	if err := t.SoftPartitioning.Validate(); err != nil {
+		return fmt.Errorf("invalid soft partitioning configuration: %w", err)
 	}
 
 	return nil

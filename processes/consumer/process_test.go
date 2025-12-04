@@ -5,6 +5,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/segmentio/kafka-go"
+	"github.com/stretchr/testify/assert"
+
 	"github.com/artie-labs/transfer/lib/artie"
 	"github.com/artie-labs/transfer/lib/cdc"
 	"github.com/artie-labs/transfer/lib/cdc/mongo"
@@ -14,8 +17,6 @@ import (
 	"github.com/artie-labs/transfer/lib/mocks"
 	"github.com/artie-labs/transfer/lib/telemetry/metrics"
 	"github.com/artie-labs/transfer/models"
-	"github.com/segmentio/kafka-go"
-	"github.com/stretchr/testify/assert"
 )
 
 var (
@@ -44,7 +45,7 @@ func TestProcessMessageFailures(t *testing.T) {
 		Time:          time.Time{},
 	}
 
-	msg := artie.NewMessage(kafkaMsg)
+	msg := artie.NewKafkaGoMessage(kafkaMsg)
 	args := processArgs{
 		Msg:     msg,
 		GroupID: "foo",
@@ -80,12 +81,11 @@ func TestProcessMessageFailures(t *testing.T) {
 		TopicToConfigFormatMap: tcFmtMap,
 	}
 
-	tcFmt, ok := tcFmtMap.GetTopicFmt(msg.Topic())
+	_, ok := tcFmtMap.GetTopicFmt(msg.Topic())
 	assert.True(t, ok)
 
 	tableName, err = args.process(ctx, cfg, memDB, &mocks.FakeBaseline{}, metrics.NullMetricsProvider{})
-	assert.ErrorContains(t, err, fmt.Sprintf("format: %s is not supported", tcFmt.tc.CDCKeyFormat), err.Error())
-	assert.ErrorContains(t, err, "cannot unmarshall key", err.Error())
+	assert.ErrorContains(t, err, `cannot unmarshal key "": format:  is not supported`)
 	assert.Equal(t, 0, len(memDB.TableData()))
 	assert.Empty(t, tableName)
 
@@ -159,13 +159,22 @@ func TestProcessMessageFailures(t *testing.T) {
 	}
 }`
 
-	kafkaMessage := msg.GetMessage()
+	kafkaMessage := kafka.Message{
+		Topic:         "foo",
+		Partition:     0,
+		Offset:        0,
+		HighWaterMark: 0,
+		Key:           nil,
+		Value:         nil,
+		Headers:       nil,
+		Time:          time.Time{},
+	}
 	memoryDB := memDB
 	kafkaMessage.Key = []byte(fmt.Sprintf("Struct{id=%v}", 1004))
 	kafkaMessage.Value = []byte(val)
 
 	args = processArgs{
-		Msg:                    artie.NewMessage(kafkaMessage),
+		Msg:                    artie.NewKafkaGoMessage(kafkaMessage),
 		GroupID:                "foo",
 		TopicToConfigFormatMap: tcFmtMap,
 	}
@@ -193,14 +202,15 @@ func TestProcessMessageFailures(t *testing.T) {
 	}
 	{
 		kafkaMessage.Value = []byte("not a json object")
+		msg := artie.NewKafkaGoMessage(kafkaMessage)
 		args = processArgs{
-			Msg:                    artie.NewMessage(kafkaMessage),
+			Msg:                    msg,
 			GroupID:                "foo",
 			TopicToConfigFormatMap: tcFmtMap,
 		}
 
 		tableName, err = args.process(ctx, cfg, memDB, &mocks.FakeBaseline{}, metrics.NullMetricsProvider{})
-		assert.ErrorContains(t, err, "cannot unmarshall event: failed to unmarshal json: invalid character 'o' in literal")
+		assert.ErrorContains(t, err, "cannot unmarshal event: failed to unmarshal json: invalid character 'o' in literal")
 		assert.Empty(t, tableName)
 		assert.True(t, td.NumberOfRows() > 0)
 	}
@@ -225,7 +235,7 @@ func TestProcessMessageSkip(t *testing.T) {
 		Time:          time.Time{},
 	}
 
-	msg := artie.NewMessage(kafkaMsg)
+	msg := artie.NewKafkaGoMessage(kafkaMsg)
 
 	var mgo mongo.Debezium
 	const (
@@ -325,14 +335,24 @@ func TestProcessMessageSkip(t *testing.T) {
 	for _, val := range vals {
 		idx += 1
 
-		kafkaMessage := msg.GetMessage()
+		kafkaMessage := kafka.Message{
+			Topic:         "foo",
+			Partition:     0,
+			Offset:        0,
+			HighWaterMark: 0,
+			Key:           nil,
+			Value:         nil,
+			Headers:       nil,
+			Time:          time.Time{},
+		}
 		kafkaMessage.Key = []byte(fmt.Sprintf("Struct{id=%v}", idx))
 		if val != "" {
 			kafkaMessage.Value = []byte(val)
 		}
 
+		msg := artie.NewKafkaGoMessage(kafkaMessage)
 		args := processArgs{
-			Msg:                    artie.NewMessage(kafkaMessage),
+			Msg:                    msg,
 			GroupID:                "foo",
 			TopicToConfigFormatMap: tcFmtMap,
 		}

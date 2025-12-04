@@ -17,7 +17,6 @@ import (
 	"github.com/artie-labs/transfer/lib/config/constants"
 	"github.com/artie-labs/transfer/lib/destination/types"
 	"github.com/artie-labs/transfer/lib/kafkalib"
-	"github.com/artie-labs/transfer/lib/kafkalib/partition"
 	"github.com/artie-labs/transfer/lib/maputil"
 	"github.com/artie-labs/transfer/lib/optimization"
 	"github.com/artie-labs/transfer/lib/sql"
@@ -40,14 +39,14 @@ func (s *SnowflakeTestSuite) TestDropTable() {
 	tableID := s.identifierFor(tableData)
 	{
 		// Deleting without disabling drop protection
-		assert.ErrorContains(s.T(), s.stageStore.DropTable(s.T().Context(), tableID), "not allowed to be dropped")
+		assert.ErrorContains(s.T(), s.stageStore.DropTable(s.T().Context(), tableID), "is not a temporary table")
 	}
 	{
 		// Deleting with disabling drop protection
 		snowflakeTableID, ok := tableID.(dialect.TableIdentifier)
 		assert.True(s.T(), ok)
 
-		snowflakeTableID = snowflakeTableID.WithDisableDropProtection(true).(dialect.TableIdentifier)
+		snowflakeTableID = snowflakeTableID.WithTemporaryTable(true).(dialect.TableIdentifier)
 
 		// Set up expectation for DROP TABLE query
 		s.mockDB.ExpectExec(`DROP TABLE IF EXISTS "CUSTOMER"."PUBLIC"."__ARTIE_FOO"`).WillReturnResult(sqlmock.NewResult(0, 0))
@@ -112,7 +111,7 @@ func (s *SnowflakeTestSuite) TestExecuteMergeNilEdgeCase() {
 	s.stageStore.configMap.AddTable(s.identifierFor(tableData), types.NewDestinationTableConfig(anotherCols, true))
 
 	// Set up expectations for CREATE TABLE - use regex pattern to match the actual table name with suffix
-	createTableRegex := regexp.QuoteMeta(`CREATE TABLE IF NOT EXISTS "CUSTOMER"."PUBLIC"."`) + `.*` + regexp.QuoteMeta(`" ("ID" string,"FIRST_NAME" string,"__ARTIE_DELETE" boolean,"__ARTIE_ONLY_SET_DELETE" boolean) DATA_RETENTION_TIME_IN_DAYS = 0 STAGE_COPY_OPTIONS = ( PURGE = TRUE ) STAGE_FILE_FORMAT = ( TYPE = 'csv' FIELD_DELIMITER= '\t' FIELD_OPTIONALLY_ENCLOSED_BY='"' NULL_IF='__artie_null_value' EMPTY_FIELD_AS_NULL=FALSE)`)
+	createTableRegex := regexp.QuoteMeta(`CREATE TRANSIENT TABLE IF NOT EXISTS "CUSTOMER"."PUBLIC"."`) + `.*` + regexp.QuoteMeta(`" ("ID" string,"FIRST_NAME" string,"__ARTIE_DELETE" boolean,"__ARTIE_ONLY_SET_DELETE" boolean) DATA_RETENTION_TIME_IN_DAYS = 0 STAGE_COPY_OPTIONS = ( PURGE = TRUE ) STAGE_FILE_FORMAT = ( TYPE = 'csv' FIELD_DELIMITER= '\t' FIELD_OPTIONALLY_ENCLOSED_BY='"' NULL_IF='__artie_null_value' EMPTY_FIELD_AS_NULL=FALSE)`)
 	s.mockDB.ExpectExec(createTableRegex).WillReturnResult(sqlmock.NewResult(0, 0))
 
 	// Set up expectations for PUT - use regex pattern to match the actual table name with suffix
@@ -178,7 +177,7 @@ func (s *SnowflakeTestSuite) TestExecuteMergeReestablishAuth() {
 	s.stageStore.configMap.AddTable(s.identifierFor(tableData), types.NewDestinationTableConfig(cols.GetColumns(), true))
 
 	// Set up expectations for CREATE TABLE - use regex pattern to match the actual table name with suffix
-	createTableRegex := regexp.QuoteMeta(`CREATE TABLE IF NOT EXISTS "CUSTOMER"."PUBLIC"."`) + `.*` + regexp.QuoteMeta(`" ("ID" int,"NAME" string,"__ARTIE_DELETE" boolean,"__ARTIE_ONLY_SET_DELETE" boolean,"CREATED_AT" string) DATA_RETENTION_TIME_IN_DAYS = 0 STAGE_COPY_OPTIONS = ( PURGE = TRUE ) STAGE_FILE_FORMAT = ( TYPE = 'csv' FIELD_DELIMITER= '\t' FIELD_OPTIONALLY_ENCLOSED_BY='"' NULL_IF='__artie_null_value' EMPTY_FIELD_AS_NULL=FALSE)`)
+	createTableRegex := regexp.QuoteMeta(`CREATE TRANSIENT TABLE IF NOT EXISTS "CUSTOMER"."PUBLIC"."`) + `.*` + regexp.QuoteMeta(`" ("ID" int,"NAME" string,"__ARTIE_DELETE" boolean,"__ARTIE_ONLY_SET_DELETE" boolean,"CREATED_AT" string) DATA_RETENTION_TIME_IN_DAYS = 0 STAGE_COPY_OPTIONS = ( PURGE = TRUE ) STAGE_FILE_FORMAT = ( TYPE = 'csv' FIELD_DELIMITER= '\t' FIELD_OPTIONALLY_ENCLOSED_BY='"' NULL_IF='__artie_null_value' EMPTY_FIELD_AS_NULL=FALSE)`)
 	s.mockDB.ExpectExec(createTableRegex).WillReturnResult(sqlmock.NewResult(0, 0))
 
 	// Set up expectations for PUT - use regex pattern to match the actual table name with suffix
@@ -241,7 +240,7 @@ func (s *SnowflakeTestSuite) TestExecuteMerge() {
 	s.stageStore.configMap.AddTable(tableID, types.NewDestinationTableConfig(cols.GetColumns(), true))
 
 	// Set up expectations for CREATE TABLE - use regex pattern to match the actual table name with suffix
-	createTableRegex := regexp.QuoteMeta(`CREATE TABLE IF NOT EXISTS "CUSTOMER"."PUBLIC"."`) + `.*` + regexp.QuoteMeta(`" ("ID" int,"NAME" string,"__ARTIE_DELETE" boolean,"__ARTIE_ONLY_SET_DELETE" boolean,"CREATED_AT" string) DATA_RETENTION_TIME_IN_DAYS = 0 STAGE_COPY_OPTIONS = ( PURGE = TRUE ) STAGE_FILE_FORMAT = ( TYPE = 'csv' FIELD_DELIMITER= '\t' FIELD_OPTIONALLY_ENCLOSED_BY='"' NULL_IF='__artie_null_value' EMPTY_FIELD_AS_NULL=FALSE)`)
+	createTableRegex := regexp.QuoteMeta(`CREATE TRANSIENT TABLE IF NOT EXISTS "CUSTOMER"."PUBLIC"."`) + `.*` + regexp.QuoteMeta(`" ("ID" int,"NAME" string,"__ARTIE_DELETE" boolean,"__ARTIE_ONLY_SET_DELETE" boolean,"CREATED_AT" string) DATA_RETENTION_TIME_IN_DAYS = 0 STAGE_COPY_OPTIONS = ( PURGE = TRUE ) STAGE_FILE_FORMAT = ( TYPE = 'csv' FIELD_DELIMITER= '\t' FIELD_OPTIONALLY_ENCLOSED_BY='"' NULL_IF='__artie_null_value' EMPTY_FIELD_AS_NULL=FALSE)`)
 	s.mockDB.ExpectExec(createTableRegex).WillReturnResult(sqlmock.NewResult(0, 0))
 
 	// Set up expectations for PUT - use regex pattern to match the actual table name with suffix
@@ -321,7 +320,7 @@ func (s *SnowflakeTestSuite) TestExecuteMergeDeletionFlagRemoval() {
 	s.stageStore.configMap.AddTable(s.identifierFor(tableData), _config)
 
 	// First merge - Set up expectations for CREATE TABLE - use regex pattern to match the actual table name with suffix
-	createTableRegex := regexp.QuoteMeta(`CREATE TABLE IF NOT EXISTS "CUSTOMER"."PUBLIC"."`) + `.*` + regexp.QuoteMeta(`" ("ID" int,"NAME" string,"__ARTIE_DELETE" boolean,"__ARTIE_ONLY_SET_DELETE" boolean,"CREATED_AT" timestamp_tz) DATA_RETENTION_TIME_IN_DAYS = 0 STAGE_COPY_OPTIONS = ( PURGE = TRUE ) STAGE_FILE_FORMAT = ( TYPE = 'csv' FIELD_DELIMITER= '\t' FIELD_OPTIONALLY_ENCLOSED_BY='"' NULL_IF='__artie_null_value' EMPTY_FIELD_AS_NULL=FALSE)`)
+	createTableRegex := regexp.QuoteMeta(`CREATE TRANSIENT TABLE IF NOT EXISTS "CUSTOMER"."PUBLIC"."`) + `.*` + regexp.QuoteMeta(`" ("ID" int,"NAME" string,"__ARTIE_DELETE" boolean,"__ARTIE_ONLY_SET_DELETE" boolean,"CREATED_AT" timestamp_tz) DATA_RETENTION_TIME_IN_DAYS = 0 STAGE_COPY_OPTIONS = ( PURGE = TRUE ) STAGE_FILE_FORMAT = ( TYPE = 'csv' FIELD_DELIMITER= '\t' FIELD_OPTIONALLY_ENCLOSED_BY='"' NULL_IF='__artie_null_value' EMPTY_FIELD_AS_NULL=FALSE)`)
 	s.mockDB.ExpectExec(createTableRegex).WillReturnResult(sqlmock.NewResult(0, 0))
 
 	// Set up expectations for PUT - use regex pattern to match the actual table name with suffix
@@ -369,7 +368,7 @@ func (s *SnowflakeTestSuite) TestExecuteMergeDeletionFlagRemoval() {
 	}
 
 	// Second merge - Set up expectations for CREATE TABLE - use regex pattern to match the actual table name with suffix
-	createTableRegex2 := regexp.QuoteMeta(`CREATE TABLE IF NOT EXISTS "CUSTOMER"."PUBLIC"."`) + `.*` + regexp.QuoteMeta(`" ("ID" int,"CREATED_AT" timestamp_tz,"NAME" string,"__ARTIE_DELETE" boolean,"__ARTIE_ONLY_SET_DELETE" boolean,"NEW" string) DATA_RETENTION_TIME_IN_DAYS = 0 STAGE_COPY_OPTIONS = ( PURGE = TRUE ) STAGE_FILE_FORMAT = ( TYPE = 'csv' FIELD_DELIMITER= '\t' FIELD_OPTIONALLY_ENCLOSED_BY='"' NULL_IF='__artie_null_value' EMPTY_FIELD_AS_NULL=FALSE)`)
+	createTableRegex2 := regexp.QuoteMeta(`CREATE TRANSIENT TABLE IF NOT EXISTS "CUSTOMER"."PUBLIC"."`) + `.*` + regexp.QuoteMeta(`" ("ID" int,"CREATED_AT" timestamp_tz,"NAME" string,"__ARTIE_DELETE" boolean,"__ARTIE_ONLY_SET_DELETE" boolean,"NEW" string) DATA_RETENTION_TIME_IN_DAYS = 0 STAGE_COPY_OPTIONS = ( PURGE = TRUE ) STAGE_FILE_FORMAT = ( TYPE = 'csv' FIELD_DELIMITER= '\t' FIELD_OPTIONALLY_ENCLOSED_BY='"' NULL_IF='__artie_null_value' EMPTY_FIELD_AS_NULL=FALSE)`)
 	s.mockDB.ExpectExec(createTableRegex2).WillReturnResult(sqlmock.NewResult(0, 0))
 
 	// Set up expectations for PUT - use regex pattern to match the actual table name with suffix
@@ -401,25 +400,6 @@ func (s *SnowflakeTestSuite) TestExecuteMergeExitEarly() {
 	assert.True(s.T(), commitTx)
 	// No SQL should be executed for empty table data
 	assert.NoError(s.T(), s.mockDB.ExpectationsWereMet())
-}
-
-func (s *SnowflakeTestSuite) TestStore_AdditionalEqualityStrings() {
-	{
-		// No additional equality strings:
-		tableData := optimization.NewTableData(nil, config.Replication, nil, kafkalib.TopicConfig{}, "foo")
-		assert.Empty(s.T(), s.stageStore.additionalEqualityStrings(tableData))
-	}
-	{
-		// Additional equality strings:
-		topicConfig := kafkalib.TopicConfig{}
-		topicConfig.AdditionalMergePredicates = []partition.MergePredicates{
-			{PartitionField: "foo"},
-			{PartitionField: "bar"},
-		}
-		tableData := optimization.NewTableData(nil, config.Replication, nil, topicConfig, "foo")
-		actual := s.stageStore.additionalEqualityStrings(tableData)
-		assert.Equal(s.T(), []string{`tgt."FOO" = stg."FOO"`, `tgt."BAR" = stg."BAR"`}, actual)
-	}
 }
 
 func TestTempTableIDWithSuffix(t *testing.T) {

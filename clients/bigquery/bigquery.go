@@ -47,8 +47,8 @@ func (s Store) GetConfig() config.Config {
 }
 
 func (s *Store) DropTable(ctx context.Context, tableID sql.TableIdentifier) error {
-	if !tableID.AllowToDrop() {
-		return fmt.Errorf("table %q is not allowed to be dropped", tableID.FullyQualifiedName())
+	if !tableID.TemporaryTable() {
+		return fmt.Errorf("table %q is not a temporary table, so it cannot be dropped", tableID.FullyQualifiedName())
 	}
 
 	if _, err := s.ExecContext(ctx, s.Dialect().BuildDropTableQuery(tableID)); err != nil {
@@ -80,7 +80,6 @@ func (s *Store) Append(ctx context.Context, tableData *optimization.TableData, u
 		UseTempTable:   true,
 		TempTableID:    temporaryTableID,
 	})
-
 	if err != nil {
 		return fmt.Errorf("failed to append: %w", err)
 	}
@@ -99,14 +98,14 @@ func (s *Store) Append(ctx context.Context, tableData *optimization.TableData, u
 	return nil
 }
 
-func (s *Store) PrepareTemporaryTable(ctx context.Context, tableData *optimization.TableData, dwh *types.DestinationTableConfig, tempTableID sql.TableIdentifier, _ sql.TableIdentifier, opts types.AdditionalSettings, createTempTable bool) error {
+func (s *Store) LoadDataIntoTable(ctx context.Context, tableData *optimization.TableData, dwh *types.DestinationTableConfig, tableID, _ sql.TableIdentifier, opts types.AdditionalSettings, createTempTable bool) error {
 	if createTempTable {
-		if err := shared.CreateTempTable(ctx, s, tableData, dwh, opts.ColumnSettings, tempTableID); err != nil {
+		if err := shared.CreateTempTable(ctx, s, tableData, dwh, opts.ColumnSettings, tableID); err != nil {
 			return err
 		}
 	}
 
-	bqTempTableID, err := typing.AssertType[dialect.TableIdentifier](tempTableID)
+	bqTempTableID, err := typing.AssertType[dialect.TableIdentifier](tableID)
 	if err != nil {
 		return err
 	}
@@ -201,7 +200,7 @@ func (s *Store) putTable(ctx context.Context, bqTableID dialect.TableIdentifier,
 		return bytes, nil
 	}
 
-	err = batch.BySize(tableData.Rows(), s.maxRequestBytesSize, false, encoder, func(chunk [][]byte, _ []optimization.Row) error {
+	skipped, err := batch.BySize(tableData.Rows(), s.maxRequestBytesSize, false, encoder, func(chunk [][]byte, _ []optimization.Row) error {
 		result, err := managedStream.AppendRows(ctx, chunk)
 		if err != nil {
 			return fmt.Errorf("failed to append rows: %w", err)
@@ -223,7 +222,6 @@ func (s *Store) putTable(ctx context.Context, bqTableID dialect.TableIdentifier,
 
 					return fmt.Errorf("failed to append rows, encountered %d errors: %v", len(rowErrs), errors)
 				}
-
 			}
 
 			return fmt.Errorf("failed to get response: %w", err)
@@ -239,7 +237,6 @@ func (s *Store) putTable(ctx context.Context, bqTableID dialect.TableIdentifier,
 
 		return nil
 	})
-
 	if err != nil {
 		return fmt.Errorf("failed to write rows: %w", err)
 	}
@@ -251,7 +248,7 @@ func (s *Store) putTable(ctx context.Context, bqTableID dialect.TableIdentifier,
 	}
 
 	// Verify that we wrote all expected rows
-	expectedRows := uint64(tableData.NumberOfRows())
+	expectedRows := uint64(int(tableData.NumberOfRows()) - skipped)
 	if uint64(rowCount) != expectedRows {
 		return fmt.Errorf("row count mismatch after write, expected: %d, got: %d", expectedRows, rowCount)
 	}
@@ -308,15 +305,26 @@ func LoadBigQuery(ctx context.Context, cfg config.Config, _store *db.Store) (*St
 		return nil, err
 	}
 
-	// We'll default to 400 kb offset. You can override this behavior by setting [BIGQUERY_STORAGE_WRITE_OFFSET_KB]
-	offset, err := strconv.Atoi(cmp.Or(os.Getenv("BIGQUERY_STORAGE_WRITE_OFFSET_KB"), "400"))
+	// Default to using 90% of the 10 MiB limit to account for gRPC request overhead
+	// (headers, protobuf envelope, metadata, field tags, etc).
+	// You can override this by setting [BIGQUERY_STORAGE_WRITE_MAX_PERCENT] (1-100).
+	maxPercent, err := strconv.Atoi(cmp.Or(os.Getenv("BIGQUERY_STORAGE_WRITE_MAX_PERCENT"), "90"))
 	if err != nil {
-		return nil, fmt.Errorf("failed to convert offset to int: %w", err)
+		return nil, fmt.Errorf("failed to convert max percent to int: %w", err)
 	}
 
-	slog.Info("Loaded BigQuery storage write offset", slog.Int("offset kb", offset))
-	// Storage Write API is limited to 10 MiB, subtract 400 KiB to account for request overhead.
-	maxRequestByteSize := (10 * 1024 * 1024) - (offset * 1024)
+	if maxPercent < 1 || maxPercent > 100 {
+		return nil, fmt.Errorf("BIGQUERY_STORAGE_WRITE_MAX_PERCENT must be between 1 and 100, got: %d", maxPercent)
+	}
+
+	// Storage Write API is limited to 10 MiB. Use percentage to leave room for request overhead.
+	const bigQueryMaxRequestSize = 10 * 1024 * 1024
+	maxRequestByteSize := int(float64(bigQueryMaxRequestSize) * float64(maxPercent) / 100.0)
+	slog.Info("Loaded BigQuery storage write configuration",
+		slog.Int("maxPercent", maxPercent),
+		slog.Int("maxPayloadBytes", maxRequestByteSize),
+		slog.Int("overheadBytes", bigQueryMaxRequestSize-maxRequestByteSize),
+	)
 	return &Store{
 		bqClient:            bqClient,
 		configMap:           &types.DestinationTableConfigMap{},

@@ -18,7 +18,6 @@ import (
 	"github.com/artie-labs/transfer/lib/typing"
 	"github.com/artie-labs/transfer/lib/typing/columns"
 	libconverters "github.com/artie-labs/transfer/lib/typing/converters"
-	"github.com/artie-labs/transfer/lib/typing/ext"
 )
 
 // columnToTableFieldSchema returns a [*storagepb.TableFieldSchema] suitable for transferring data of the type that the column specifies.
@@ -197,7 +196,7 @@ func rowToMessage(row map[string]any, columns []columns.Column, messageDescripto
 
 			message.Set(field, protoreflect.ValueOfString(castedValue))
 		case typing.Date.Kind:
-			_time, err := ext.ParseDateFromAny(value)
+			_time, err := typing.ParseDateFromAny(value)
 			if err != nil {
 				return nil, fmt.Errorf("failed to cast value for column: %q, err: %w", column.Name(), err)
 			}
@@ -205,21 +204,21 @@ func rowToMessage(row map[string]any, columns []columns.Column, messageDescripto
 			daysSinceEpoch := _time.Unix() / (60 * 60 * 24)
 			message.Set(field, protoreflect.ValueOfInt32(int32(daysSinceEpoch)))
 		case typing.Time.Kind:
-			_time, err := ext.ParseTimeFromAny(value)
+			_time, err := typing.ParseTimeFromAny(value)
 			if err != nil {
 				return nil, fmt.Errorf("failed to cast value for column: %q, err: %w", column.Name(), err)
 			}
 
 			message.Set(field, protoreflect.ValueOfInt64(encodePacked64TimeMicros(_time)))
 		case typing.TimestampNTZ.Kind:
-			_time, err := ext.ParseTimestampNTZFromAny(value)
+			_time, err := typing.ParseTimestampNTZFromAny(value)
 			if err != nil {
 				return nil, fmt.Errorf("failed to cast value for column: %q, err: %w", column.Name(), err)
 			}
 
 			message.Set(field, protoreflect.ValueOfInt64(encodePacked64DatetimeMicros(_time)))
 		case typing.TimestampTZ.Kind:
-			_time, err := ext.ParseTimestampTZFromAny(value)
+			_time, err := typing.ParseTimestampTZFromAny(value)
 			if err != nil {
 				return nil, fmt.Errorf("failed to cast value for column: %q, err: %w", column.Name(), err)
 			}
@@ -260,9 +259,24 @@ func rowToMessage(row map[string]any, columns []columns.Column, messageDescripto
 // Relational will return a string representation of the struct such as `{"hello": "world"}`
 func encodeStructToJSONString(value any) (string, error) {
 	if stringValue, ok := value.(string); ok {
+		if stringValue == "" {
+			return "", nil
+		}
+
 		if strings.Contains(stringValue, constants.ToastUnavailableValuePlaceholder) {
 			return fmt.Sprintf(`{"key":"%s"}`, constants.ToastUnavailableValuePlaceholder), nil
 		}
+
+		// If the value is invalid JSON, then let's wrap it in quotes, so it doesn't get misinterpreted as a JSON string by BigQuery.
+		// Use json.Marshal to properly escape the string for JSON format (not Go's %q format).
+		if !json.Valid([]byte(stringValue)) {
+			bytes, err := json.Marshal(stringValue)
+			if err != nil {
+				return "", fmt.Errorf("failed to marshal string value: %w", err)
+			}
+			return string(bytes), nil
+		}
+
 		return stringValue, nil
 	}
 

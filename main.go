@@ -14,6 +14,7 @@ import (
 	"github.com/artie-labs/transfer/lib/cryptography"
 	"github.com/artie-labs/transfer/lib/destination"
 	"github.com/artie-labs/transfer/lib/destination/utils"
+	"github.com/artie-labs/transfer/lib/kafkalib"
 	"github.com/artie-labs/transfer/lib/logger"
 	"github.com/artie-labs/transfer/lib/telemetry/metrics"
 	"github.com/artie-labs/transfer/models"
@@ -21,9 +22,7 @@ import (
 	"github.com/artie-labs/transfer/processes/pool"
 )
 
-var (
-	version = "dev" // this will be set by the goreleaser configuration to appropriate value for the compiled binary.
-)
+var version = "dev" // this will be set by the goreleaser configuration to appropriate value for the compiled binary.
 
 func main() {
 	// Parse args into settings
@@ -85,12 +84,26 @@ func main() {
 	slog.Info("Starting...", slog.String("version", version))
 
 	inMemDB := models.NewMemoryDB()
+	switch settings.Config.KafkaClient {
+	case config.KafkaGoClient:
+		ctx, err = kafkalib.InjectConsumerProvidersIntoContext(ctx, settings.Config.Kafka)
+		if err != nil {
+			logger.Fatal("Failed to inject kafka-go consumer providers into context", slog.Any("err", err))
+		}
+	case config.FranzGoClient:
+		ctx, err = kafkalib.InjectFranzGoConsumerProvidersIntoContext(ctx, settings.Config.Kafka)
+		if err != nil {
+			logger.Fatal("Failed to inject franz-go consumer providers into context", slog.Any("err", err))
+		}
+	default:
+		logger.Fatal(fmt.Sprintf("Kafka client: %q not supported", settings.Config.KafkaClient))
+	}
 
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		pool.StartPool(ctx, inMemDB, dest, metricsClient, time.Duration(settings.Config.FlushIntervalSeconds)*time.Second)
+		pool.StartPool(ctx, inMemDB, dest, metricsClient, settings.Config.Kafka.Topics(), time.Duration(settings.Config.FlushIntervalSeconds)*time.Second)
 	}()
 
 	wg.Add(1)
@@ -98,7 +111,7 @@ func main() {
 		defer wg.Done()
 		switch settings.Config.Queue {
 		case constants.Kafka:
-			consumer.StartConsumer(ctx, settings.Config, inMemDB, dest, metricsClient)
+			consumer.StartKafkaConsumer(ctx, settings.Config, inMemDB, dest, metricsClient)
 		default:
 			logger.Fatal(fmt.Sprintf("Message queue: %q not supported", settings.Config.Queue))
 		}

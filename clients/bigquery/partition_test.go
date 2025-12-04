@@ -5,8 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/artie-labs/transfer/lib/optimization"
 	"github.com/stretchr/testify/assert"
+
+	"github.com/artie-labs/transfer/lib/optimization"
 )
 
 func buildRows(data []map[string]any) []optimization.Row {
@@ -23,13 +24,13 @@ func TestDistinctDates(t *testing.T) {
 		dates, err := buildDistinctDates("ts", buildRows([]map[string]any{
 			{"ts": time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC).Format(time.RFC3339Nano)},
 			{"ts": nil},
-		}))
+		}), nil)
 		assert.ErrorContains(t, err, `column "ts" is not a time column`)
 		assert.Empty(t, dates)
 	}
 	{
 		// No dates
-		dates, err := buildDistinctDates("", nil)
+		dates, err := buildDistinctDates("", nil, nil)
 		assert.NoError(t, err)
 		assert.Empty(t, dates)
 	}
@@ -37,7 +38,7 @@ func TestDistinctDates(t *testing.T) {
 		// One date
 		dates, err := buildDistinctDates("ts", buildRows([]map[string]any{
 			{"ts": time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC).Format(time.RFC3339Nano)},
-		}))
+		}), nil)
 		assert.NoError(t, err)
 		assert.Equal(t, []string{"2020-01-01"}, dates)
 	}
@@ -46,7 +47,7 @@ func TestDistinctDates(t *testing.T) {
 		dates, err := buildDistinctDates("ts", buildRows([]map[string]any{
 			{"ts": time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC).Format(time.RFC3339Nano)},
 			{"ts": time.Date(2020, 1, 2, 0, 0, 0, 0, time.UTC).Format(time.RFC3339Nano)},
-		}))
+		}), nil)
 		assert.NoError(t, err)
 		equalLists(t, []string{"2020-01-01", "2020-01-02"}, dates)
 	}
@@ -56,13 +57,13 @@ func TestDistinctDates(t *testing.T) {
 			{"ts": time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC).Format(time.RFC3339Nano)},
 			{"ts": time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC).Format(time.RFC3339Nano)},
 			{"ts": time.Date(2020, 1, 2, 0, 0, 0, 0, time.UTC).Format(time.RFC3339Nano)},
-		}))
+		}), nil)
 		assert.NoError(t, err)
 		equalLists(t, []string{"2020-01-01", "2020-01-02"}, dates)
 	}
 }
 
-func equalLists(t *testing.T, list1 []string, list2 []string) {
+func equalLists(t *testing.T, list1, list2 []string) {
 	// Sort the two lists prior to comparison
 	slices.Sort(list1)
 	slices.Sort(list2)

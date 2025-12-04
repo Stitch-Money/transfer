@@ -4,16 +4,18 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/stdlib"
+
 	"github.com/artie-labs/transfer/clients/bigquery/converters"
 	"github.com/artie-labs/transfer/clients/postgres/dialect"
 	"github.com/artie-labs/transfer/clients/shared"
+	"github.com/artie-labs/transfer/lib/config/constants"
 	"github.com/artie-labs/transfer/lib/destination/types"
 	"github.com/artie-labs/transfer/lib/optimization"
 	"github.com/artie-labs/transfer/lib/sql"
 	"github.com/artie-labs/transfer/lib/typing"
 	"github.com/artie-labs/transfer/lib/typing/columns"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/stdlib"
 )
 
 // [stagingIterator] - This is an implementation of [pgx.CopyFromSource]
@@ -58,14 +60,14 @@ func (s *Store) buildStagingIterator(tableData *optimization.TableData) (pgx.Cop
 	return &stagingIterator{data: values, idx: 0}, nil
 }
 
-func (s *Store) PrepareTemporaryTable(ctx context.Context, tableData *optimization.TableData, dwh *types.DestinationTableConfig, tempTableID sql.TableIdentifier, _ sql.TableIdentifier, opts types.AdditionalSettings, createTempTable bool) error {
+func (s *Store) LoadDataIntoTable(ctx context.Context, tableData *optimization.TableData, dwh *types.DestinationTableConfig, tableID, _ sql.TableIdentifier, opts types.AdditionalSettings, createTempTable bool) error {
 	if createTempTable {
-		if err := shared.CreateTempTable(ctx, s, tableData, dwh, opts.ColumnSettings, tempTableID); err != nil {
+		if err := shared.CreateTempTable(ctx, s, tableData, dwh, opts.ColumnSettings, tableID); err != nil {
 			return err
 		}
 	}
 
-	castedTableID, ok := tempTableID.(dialect.TableIdentifier)
+	castedTableID, ok := tableID.(dialect.TableIdentifier)
 	if !ok {
 		return fmt.Errorf("failed to cast table identifier to dialect.TableIdentifier")
 	}
@@ -101,7 +103,6 @@ func (s *Store) PrepareTemporaryTable(ctx context.Context, tableData *optimizati
 
 		return nil
 	})
-
 	if err != nil {
 		return fmt.Errorf("failed to copy from rows: %w", err)
 	}
@@ -126,6 +127,12 @@ func parseValue(value any, col columns.Column) (any, error) {
 		return converters.Int64Converter{}.Convert(value)
 	case typing.Boolean.Kind:
 		return converters.BooleanConverter{}.Convert(value)
+	case typing.Struct.Kind:
+		// If it's the toast placeholder value, wrap it in quotes so it's valid json
+		if value == constants.ToastUnavailableValuePlaceholder {
+			return fmt.Sprintf(`%q`, value), nil
+		}
+		return value, nil
 	default:
 		return value, nil
 	}

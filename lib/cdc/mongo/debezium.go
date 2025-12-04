@@ -5,14 +5,14 @@ import (
 	"fmt"
 	"time"
 
+	"go.mongodb.org/mongo-driver/bson"
+
 	"github.com/artie-labs/transfer/lib/cdc"
 	"github.com/artie-labs/transfer/lib/config/constants"
 	"github.com/artie-labs/transfer/lib/debezium"
 	"github.com/artie-labs/transfer/lib/kafkalib"
 	"github.com/artie-labs/transfer/lib/typing"
 	"github.com/artie-labs/transfer/lib/typing/columns"
-	"github.com/artie-labs/transfer/lib/typing/mongo"
-	"go.mongodb.org/mongo-driver/bson"
 )
 
 type Debezium struct{}
@@ -29,7 +29,7 @@ func (Debezium) GetEventFromBytes(bytes []byte) (cdc.Event, error) {
 
 	// Now marshal before & after string.
 	if schemaEventPayload.Payload.Before != nil {
-		before, err := mongo.JSONEToMap([]byte(*schemaEventPayload.Payload.Before))
+		before, err := typing.JSONEToMap([]byte(*schemaEventPayload.Payload.Before))
 		if err != nil {
 			return nil, err
 		}
@@ -38,7 +38,7 @@ func (Debezium) GetEventFromBytes(bytes []byte) (cdc.Event, error) {
 	}
 
 	if schemaEventPayload.Payload.After != nil {
-		after, err := mongo.JSONEToMap([]byte(*schemaEventPayload.Payload.After))
+		after, err := typing.JSONEToMap([]byte(*schemaEventPayload.Payload.After))
 		if err != nil {
 			return nil, fmt.Errorf("failed to call mongo JSONEToMap: %w", err)
 		}
@@ -53,8 +53,8 @@ func (Debezium) Labels() []string {
 	return []string{constants.DBZMongoFormat}
 }
 
-func (Debezium) GetPrimaryKey(key []byte, tc kafkalib.TopicConfig) (map[string]any, error) {
-	kvMap, err := debezium.ParsePartitionKey(key, tc.CDCKeyFormat)
+func (Debezium) GetPrimaryKey(key []byte, tc kafkalib.TopicConfig, reservedColumns map[string]bool) (map[string]any, error) {
+	kvMap, err := debezium.ParsePartitionKey(key, tc.CDCKeyFormat, reservedColumns)
 	if err != nil {
 		return nil, err
 	}
@@ -77,7 +77,7 @@ func (Debezium) GetPrimaryKey(key []byte, tc kafkalib.TopicConfig) (map[string]a
 		return nil, err
 	}
 
-	kvMap, err = mongo.JSONEToMap(kvMapBytes)
+	kvMap, err = typing.JSONEToMap(kvMapBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -127,7 +127,7 @@ func (s *SchemaEventPayload) GetOptionalSchema() (map[string]typing.KindDetails,
 	return nil, nil
 }
 
-func (s *SchemaEventPayload) GetColumns() (*columns.Columns, error) {
+func (s *SchemaEventPayload) GetColumns(reservedColumns map[string]bool) (*columns.Columns, error) {
 	fieldsObject := s.Schema.GetSchemaFromLabel(debezium.After)
 	if fieldsObject == nil {
 		// AFTER schema does not exist.
@@ -138,7 +138,7 @@ func (s *SchemaEventPayload) GetColumns() (*columns.Columns, error) {
 	for _, field := range fieldsObject.Fields {
 		// We are purposefully doing this to ensure that the correct typing is set
 		// When we invoke event.Save()
-		cols.AddColumn(columns.NewColumn(columns.EscapeName(field.FieldName), typing.Invalid))
+		cols.AddColumn(columns.NewColumn(columns.EscapeName(field.FieldName, reservedColumns), typing.Invalid))
 	}
 
 	return &cols, nil

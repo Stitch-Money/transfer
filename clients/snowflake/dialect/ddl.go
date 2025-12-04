@@ -10,8 +10,8 @@ import (
 
 func (SnowflakeDialect) BuildCreateTableQuery(tableID sql.TableIdentifier, temporary bool, colSQLParts []string) string {
 	query := fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (%s)", tableID.FullyQualifiedName(), strings.Join(colSQLParts, ","))
-
 	if temporary {
+		query = fmt.Sprintf("CREATE TRANSIENT TABLE IF NOT EXISTS %s (%s)", tableID.FullyQualifiedName(), strings.Join(colSQLParts, ","))
 		// TEMPORARY Table syntax - https://docs.snowflake.com/en/sql-reference/sql/create-table
 		// DATA_RETENTION_TIME_IN_DAYS = 0 - This will disable time travel on staging tables and reduce storage overhead.
 		// PURGE syntax - https://docs.snowflake.com/en/sql-reference/sql/copy-into-table#purging-files-after-loading
@@ -42,9 +42,14 @@ func (SnowflakeDialect) BuildDescribeTableQuery(tableID sql.TableIdentifier) (st
 	return fmt.Sprintf("DESC TABLE %s", tableID.FullyQualifiedName()), nil, nil
 }
 
-func (SnowflakeDialect) BuildCreateStageQuery(dbName string, schemaName string, stageName string, bucket string, credentialsClause string) string {
-	base := fmt.Sprintf(`CREATE OR REPLACE STAGE %s.%s.%s URL = 's3://%s' FILE_FORMAT = ( TYPE = 'csv' FIELD_DELIMITER= '\t' FIELD_OPTIONALLY_ENCLOSED_BY='"' NULL_IF='%s' EMPTY_FIELD_AS_NULL=FALSE)`,
-		dbName, schemaName, stageName, bucket, constants.NullValuePlaceholder)
+func (SnowflakeDialect) BuildCreateStageQuery(dbName, schemaName, stageName, bucket, prefix, credentialsClause string) string {
+	s3Path := fmt.Sprintf("s3://%s", bucket)
+	if prefix != "" {
+		s3Path = fmt.Sprintf("%s/%s", s3Path, prefix)
+	}
+
+	base := fmt.Sprintf(`CREATE OR REPLACE STAGE %s.%s.%s URL = '%s' FILE_FORMAT = ( TYPE = 'csv' FIELD_DELIMITER= '\t' FIELD_OPTIONALLY_ENCLOSED_BY='"' NULL_IF='%s' EMPTY_FIELD_AS_NULL=FALSE)`,
+		dbName, schemaName, stageName, s3Path, constants.NullValuePlaceholder)
 
 	if credentialsClause != "" {
 		return fmt.Sprintf(`%s CREDENTIALS = ( %s )`, base, credentialsClause)
@@ -53,6 +58,6 @@ func (SnowflakeDialect) BuildCreateStageQuery(dbName string, schemaName string, 
 	return base
 }
 
-func (SnowflakeDialect) BuildDescribeStageQuery(dbName string, schemaName string, stageName string) string {
+func (SnowflakeDialect) BuildDescribeStageQuery(dbName, schemaName, stageName string) string {
 	return fmt.Sprintf(`DESCRIBE STAGE %s.%s.%s`, dbName, schemaName, stageName)
 }

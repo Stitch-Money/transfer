@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	"github.com/DATA-DOG/go-sqlmock"
+
 	"github.com/artie-labs/transfer/clients/shared"
 	"github.com/artie-labs/transfer/clients/snowflake/dialect"
 	"github.com/artie-labs/transfer/lib/config"
@@ -72,6 +73,20 @@ func (s *SnowflakeTestSuite) TestCastColValStaging() {
 		result, err := castColValStaging("foo", typing.String, settings)
 		assert.NoError(s.T(), err)
 		assert.Equal(s.T(), "foo", result.Value)
+	}
+	{
+		// Bad timestamp
+		{
+			// Config is enabled, so we won't error, we'll just return null.
+			result, err := castColValStaging("foo", typing.Date, config.SharedDestinationSettings{SkipBadTimestamps: true})
+			assert.NoError(s.T(), err)
+			assert.Equal(s.T(), constants.NullValuePlaceholder, result.Value)
+		}
+		{
+			// Config is disabled, so we'll error.
+			_, err := castColValStaging("foo", typing.Date, config.SharedDestinationSettings{SkipBadTimestamps: false})
+			assert.Error(s.T(), err)
+		}
 	}
 }
 
@@ -164,7 +179,7 @@ func (s *SnowflakeTestSuite) TestPrepareTempTable() {
 	expectedPath := filepath.Join(tempDir, expectedFileName)
 	{
 		// Set up expectations for the first test case (creates temp table)
-		s.mockDB.ExpectExec(`CREATE TABLE IF NOT EXISTS "DATABASE"\."SCHEMA"\."TEMP___ARTIE_.*" \("USER_ID" string,"FIRST_NAME" string,"LAST_NAME" string,"DUSTY" string\) DATA_RETENTION_TIME_IN_DAYS = 0 STAGE_COPY_OPTIONS = \( PURGE = TRUE \) STAGE_FILE_FORMAT = \( TYPE = 'csv' FIELD_DELIMITER= '\\t' FIELD_OPTIONALLY_ENCLOSED_BY='"' NULL_IF='__artie_null_value' EMPTY_FIELD_AS_NULL=FALSE\)`).
+		s.mockDB.ExpectExec(`CREATE TRANSIENT TABLE IF NOT EXISTS "DATABASE"\."SCHEMA"\."TEMP___ARTIE_.*" \("USER_ID" string,"FIRST_NAME" string,"LAST_NAME" string,"DUSTY" string\) DATA_RETENTION_TIME_IN_DAYS = 0 STAGE_COPY_OPTIONS = \( PURGE = TRUE \) STAGE_FILE_FORMAT = \( TYPE = 'csv' FIELD_DELIMITER= '\\t' FIELD_OPTIONALLY_ENCLOSED_BY='"' NULL_IF='__artie_null_value' EMPTY_FIELD_AS_NULL=FALSE\)`).
 			WillReturnResult(sqlmock.NewResult(0, 0))
 
 		s.mockDB.ExpectExec(fmt.Sprintf(`PUT 'file://%s' @"DATABASE"\."SCHEMA"\."%%TEMP___ARTIE_.*"`, expectedPath)).
@@ -173,7 +188,7 @@ func (s *SnowflakeTestSuite) TestPrepareTempTable() {
 		s.mockDB.ExpectQuery(fmt.Sprintf(`COPY INTO "DATABASE"\."SCHEMA"\."TEMP___ARTIE_.*" \("USER_ID","FIRST_NAME","LAST_NAME","DUSTY"\) FROM \(SELECT \$1,\$2,\$3,\$4 FROM @"DATABASE"\."SCHEMA"\."%%TEMP___ARTIE_.*"\) FILES = \('%s'\)`, expectedFileName)).
 			WillReturnRows(sqlmock.NewRows([]string{"rows_loaded"}).AddRow(fmt.Sprintf("%d", tableData.NumberOfRows())))
 
-		assert.NoError(s.T(), s.stageStore.PrepareTemporaryTable(s.T().Context(), tableData, snowflakeTableConfig, tempTableID, tempTableID, types.AdditionalSettings{}, true))
+		assert.NoError(s.T(), s.stageStore.LoadDataIntoTable(s.T().Context(), tableData, snowflakeTableConfig, tempTableID, tempTableID, types.AdditionalSettings{}, true))
 		assert.NoError(s.T(), s.mockDB.ExpectationsWereMet())
 	}
 	{
@@ -184,7 +199,7 @@ func (s *SnowflakeTestSuite) TestPrepareTempTable() {
 		s.mockDB.ExpectQuery(fmt.Sprintf(`COPY INTO "DATABASE"\."SCHEMA"\."TEMP___ARTIE_.*" \("USER_ID","FIRST_NAME","LAST_NAME","DUSTY"\) FROM \(SELECT \$1,\$2,\$3,\$4 FROM @"DATABASE"\."SCHEMA"\."%%TEMP___ARTIE_.*"\) FILES = \('%s'\)`, expectedFileName)).
 			WillReturnRows(sqlmock.NewRows([]string{"rows_loaded"}).AddRow(fmt.Sprintf("%d", tableData.NumberOfRows())))
 
-		assert.NoError(s.T(), s.stageStore.PrepareTemporaryTable(s.T().Context(), tableData, snowflakeTableConfig, tempTableID, tempTableID, types.AdditionalSettings{}, false))
+		assert.NoError(s.T(), s.stageStore.LoadDataIntoTable(s.T().Context(), tableData, snowflakeTableConfig, tempTableID, tempTableID, types.AdditionalSettings{}, false))
 		assert.NoError(s.T(), s.mockDB.ExpectationsWereMet())
 	}
 }

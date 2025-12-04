@@ -6,9 +6,12 @@ import (
 
 	"github.com/artie-labs/transfer/clients/bigquery"
 	"github.com/artie-labs/transfer/clients/databricks"
+	"github.com/artie-labs/transfer/clients/gcs"
 	"github.com/artie-labs/transfer/clients/iceberg"
+	"github.com/artie-labs/transfer/clients/motherduck"
 	"github.com/artie-labs/transfer/clients/mssql"
 	"github.com/artie-labs/transfer/clients/postgres"
+	"github.com/artie-labs/transfer/clients/redis"
 	"github.com/artie-labs/transfer/clients/redshift"
 	"github.com/artie-labs/transfer/clients/s3"
 	"github.com/artie-labs/transfer/clients/snowflake"
@@ -19,7 +22,7 @@ import (
 )
 
 func IsOutputBaseline(cfg config.Config) bool {
-	return cfg.Output == constants.S3 || cfg.Output == constants.Iceberg
+	return cfg.Output == constants.S3 || cfg.Output == constants.GCS || cfg.Output == constants.Iceberg || cfg.Output == constants.Redis
 }
 
 func LoadBaseline(ctx context.Context, cfg config.Config) (destination.Baseline, error) {
@@ -31,10 +34,23 @@ func LoadBaseline(ctx context.Context, cfg config.Config) (destination.Baseline,
 		}
 
 		return store, nil
+	case constants.GCS:
+		store, err := gcs.LoadStore(ctx, cfg)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load GCS: %w", err)
+		}
+
+		return store, nil
 	case constants.Iceberg:
 		store, err := iceberg.LoadStore(ctx, cfg)
 		if err != nil {
 			return nil, fmt.Errorf("failed to load Iceberg: %w", err)
+		}
+		return store, nil
+	case constants.Redis:
+		store, err := redis.LoadRedis(ctx, cfg, nil)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load Redis: %w", err)
 		}
 		return store, nil
 	}
@@ -56,6 +72,8 @@ func LoadDestination(ctx context.Context, cfg config.Config, store *db.Store) (d
 		return postgres.LoadStore(cfg)
 	case constants.Redshift:
 		return redshift.LoadRedshift(ctx, cfg, store)
+	case constants.MotherDuck:
+		return motherduck.LoadStore(cfg)
 	}
 
 	return nil, fmt.Errorf("invalid destination: %q", cfg.Output)

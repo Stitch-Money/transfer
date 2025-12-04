@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/artie-labs/transfer/lib"
+	"github.com/artie-labs/transfer/lib/config/constants"
 	"github.com/artie-labs/transfer/lib/destination"
 	"github.com/artie-labs/transfer/lib/destination/ddl"
 	"github.com/artie-labs/transfer/lib/destination/types"
@@ -57,7 +59,7 @@ func Merge(ctx context.Context, dest destination.Destination, tableData *optimiz
 		}
 	}
 
-	if err = AlterTableDropColumns(ctx, dest, tableConfig, tableID, srcKeysMissing, tableData.LatestCDCTs, tableData.ContainOtherOperations()); err != nil {
+	if err = AlterTableDropColumns(ctx, dest, tableConfig, tableID, srcKeysMissing, tableData.GetLatestTimestamp(), tableData.ContainOtherOperations()); err != nil {
 		return fmt.Errorf("failed to drop columns for table %q: %w", tableID.Table(), err)
 	}
 
@@ -66,19 +68,47 @@ func Merge(ctx context.Context, dest destination.Destination, tableData *optimiz
 	}
 
 	temporaryTableID := TempTableIDWithSuffix(dest.IdentifierFor(tableData.TopicConfig().BuildDatabaseAndSchemaPair(), tableData.Name()), tableData.TempTableSuffix())
-	defer func() {
-		if dropErr := ddl.DropTemporaryTable(ctx, dest, temporaryTableID, false); dropErr != nil {
-			slog.Warn("Failed to drop temporary table", slog.Any("err", dropErr), slog.String("tableName", temporaryTableID.FullyQualifiedName()))
-		}
-	}()
 
-	if err = dest.PrepareTemporaryTable(ctx, tableData, tableConfig, temporaryTableID, tableID, types.AdditionalSettings{ColumnSettings: opts.ColumnSettings}, true); err != nil {
-		return fmt.Errorf("failed to prepare temporary table: %w", err)
+	config := dest.GetConfig()
+	var subQuery string
+	if config.IsStagingTableReuseEnabled() {
+		if stagingManager, ok := dest.(ReusableStagingTableManager); ok {
+			stagingTableID := dest.IdentifierFor(
+				tableData.TopicConfig().BuildDatabaseAndSchemaPair(),
+				GenerateReusableStagingTableName(
+					tableID.Table(),
+					config.GetStagingTableSuffix(),
+				),
+			).WithTemporaryTable(true)
+			if err = stagingManager.PrepareReusableStagingTable(ctx, tableData, tableConfig, stagingTableID, tableID, types.AdditionalSettings{ColumnSettings: opts.ColumnSettings}); err != nil {
+				return fmt.Errorf("failed to prepare reusable staging table: %w", err)
+			}
+
+			subQuery = stagingTableID.FullyQualifiedName()
+		} else {
+			return fmt.Errorf("destination %T does not support staging table reuse", dest)
+		}
+	} else {
+		defer func() {
+			if dropErr := ddl.DropTemporaryTable(ctx, dest, temporaryTableID, false); dropErr != nil {
+				slog.Warn("Failed to drop temporary table", slog.Any("err", dropErr), slog.String("tableName", temporaryTableID.FullyQualifiedName()))
+			}
+		}()
+
+		if err = dest.LoadDataIntoTable(ctx, tableData, tableConfig, temporaryTableID, tableID, types.AdditionalSettings{ColumnSettings: opts.ColumnSettings}, true); err != nil {
+			return fmt.Errorf("failed to prepare temporary table: %w", err)
+		}
+
+		subQuery = temporaryTableID.FullyQualifiedName()
 	}
 
 	// Now iterate over all the in-memory cols and see which ones require a backfill.
 	for _, col := range tableData.ReadOnlyInMemoryCols().GetColumns() {
 		if col.ShouldSkip() {
+			continue
+		}
+		// Skip Artie specific columns
+		if slices.Contains(constants.ArtieColumns, col.Name()) {
 			continue
 		}
 
@@ -89,7 +119,6 @@ func Merge(ctx context.Context, dest destination.Destination, tableData *optimiz
 				err = tableConfig.UpsertColumn(col.Name(), columns.UpsertColumnArg{
 					Backfilled: typing.ToPtr(true),
 				})
-
 				if err != nil {
 					return fmt.Errorf("failed to update column backfilled status: %w", err)
 				}
@@ -110,11 +139,6 @@ func Merge(ctx context.Context, dest destination.Destination, tableData *optimiz
 		if backfillErr != nil {
 			return fmt.Errorf("failed to backfill col: %s, default value: %v, err: %w", col.Name(), col.DefaultValue(), backfillErr)
 		}
-	}
-
-	subQuery := temporaryTableID.FullyQualifiedName()
-	if opts.SubQueryDedupe {
-		subQuery = dest.Dialect().BuildDedupeTableQuery(temporaryTableID, tableData.PrimaryKeys())
 	}
 
 	if subQuery == "" {

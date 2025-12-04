@@ -65,6 +65,44 @@ type S3Settings struct {
 	TableNameSeparator string                   `yaml:"tableNameSeparator"`
 }
 
+type GCSSettings struct {
+	FolderName string `yaml:"folderName"`
+	Bucket     string `yaml:"bucket"`
+	// PathToCredentials is _optional_ if you have GOOGLE_APPLICATION_CREDENTIALS set as an env var
+	// Links to credentials: https://cloud.google.com/docs/authentication/application-default-credentials#GAC
+	PathToCredentials  string                   `yaml:"pathToCredentials"`
+	ProjectID          string                   `yaml:"projectID"`
+	OutputFormat       constants.S3OutputFormat `yaml:"outputFormat"`
+	TableNameSeparator string                   `yaml:"tableNameSeparator"`
+}
+
+type Redis struct {
+	Host     string `yaml:"host"`
+	Port     int    `yaml:"port"`
+	Password string `yaml:"password"`
+	Database int    `yaml:"database"`
+}
+
+func (r *Redis) Validate() error {
+	if r == nil {
+		return fmt.Errorf("redis config is nil")
+	}
+
+	if r.Host == "" {
+		return fmt.Errorf("redis host is empty")
+	}
+
+	if r.Port <= 0 {
+		return fmt.Errorf("invalid redis port: %d", r.Port)
+	}
+
+	if r.Database < 0 {
+		return fmt.Errorf("invalid redis database: %d", r.Database)
+	}
+
+	return nil
+}
+
 type Snowflake struct {
 	AccountID string `yaml:"account"`
 	Username  string `yaml:"username"`
@@ -90,11 +128,10 @@ type ExternalStage struct {
 	Name    string `yaml:"name"`
 	// S3 configuration for the external stage
 	Bucket string `yaml:"bucket"`
-
-	// Credentials clause is what we will use to authenticate with S3.
+	Prefix string `yaml:"prefix"`
+	// Credentials clause (optional) is what we will use to authenticate with S3.
 	// It can be static credentials or an AWS_ROLE.
 	CredentialsClause string `yaml:"credentialsClause,omitempty"`
-	Prefix            string `yaml:"prefix"`
 }
 
 type Iceberg struct {
@@ -153,4 +190,9 @@ func (s S3Tables) ApacheLivyConfig() map[string]any {
 
 func (s S3Tables) CatalogName() string {
 	return "s3tablesbucket"
+}
+
+type MotherDuck struct {
+	DucktapeURL string `yaml:"ducktapeUrl"`
+	Token       string `yaml:"token"`
 }

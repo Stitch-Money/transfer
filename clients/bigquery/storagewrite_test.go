@@ -6,12 +6,13 @@ import (
 	"time"
 
 	"cloud.google.com/go/bigquery/storage/apiv1/storagepb"
+	"github.com/stretchr/testify/assert"
+	"google.golang.org/protobuf/encoding/protojson"
+
 	"github.com/artie-labs/transfer/lib/numbers"
 	"github.com/artie-labs/transfer/lib/typing"
 	"github.com/artie-labs/transfer/lib/typing/columns"
 	"github.com/artie-labs/transfer/lib/typing/decimal"
-	"github.com/stretchr/testify/assert"
-	"google.golang.org/protobuf/encoding/protojson"
 )
 
 func TestColumnToTableFieldSchema(t *testing.T) {
@@ -245,5 +246,18 @@ func TestEncodeStructToJSONString(t *testing.T) {
 		result, err := encodeStructToJSONString(map[string]any{"foo": "bar", "baz": 1234})
 		assert.NoError(t, err)
 		assert.Equal(t, `{"baz":1234,"foo":"bar"}`, result)
+	}
+	{
+		// SQL query string with escaped newlines (not valid JSON):
+		// This simulates the production issue where a SQL query string is written to a JSON column.
+		sqlQuery := "WITH products_sold_last_30 AS (\\n  select distinct product_id as id from core_pos_order_line_items where created_at > CURRENT_DATE - INTERVAL '30 days'\\n)\\nSELECT\\n    sp.barcode as lookup_code"
+		result, err := encodeStructToJSONString(sqlQuery)
+		assert.NoError(t, err)
+		// Should be properly JSON-escaped (not Go-quoted)
+		// json.Marshal will produce a JSON string with proper escaping
+		expected, _ := json.Marshal(sqlQuery)
+		assert.Equal(t, string(expected), result)
+		// Verify it's valid JSON
+		assert.True(t, json.Valid([]byte(result)))
 	}
 }

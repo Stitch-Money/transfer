@@ -5,10 +5,6 @@ import (
 )
 
 const (
-	// Environment variables:
-	// [KafkaHWMEnvVar] - If set, we will have an additional Kafka high watermark check to prevent duplicate messages.
-	KafkaHWMEnvVar = "KAFKA_HWM"
-
 	NullValuePlaceholder             = "__artie_null_value"
 	ToastUnavailableValuePlaceholder = "__debezium_unavailable_value"
 
@@ -47,6 +43,8 @@ const (
 	DBZMySQLFormat = "debezium.mysql"
 
 	DBZRelationalFormat = "debezium.relational"
+
+	EventTrackingFormat = "artie.trackevents"
 
 	DefaultS3TablesPackage = "software.amazon.s3tables:s3-tables-catalog-for-iceberg-runtime:0.1.4"
 )
@@ -87,23 +85,29 @@ type DestinationKind string
 const (
 	BigQuery   DestinationKind = "bigquery"
 	Databricks DestinationKind = "databricks"
+	GCS        DestinationKind = "gcs"
+	Iceberg    DestinationKind = "iceberg"
 	MSSQL      DestinationKind = "mssql"
+	MotherDuck DestinationKind = "motherduck"
 	Postgres   DestinationKind = "postgres"
 	Redshift   DestinationKind = "redshift"
 	S3         DestinationKind = "s3"
 	Snowflake  DestinationKind = "snowflake"
-	Iceberg    DestinationKind = "iceberg"
+	Redis      DestinationKind = "redis"
 )
 
 var ValidDestinations = []DestinationKind{
 	BigQuery,
 	Databricks,
+	GCS,
+	Iceberg,
 	MSSQL,
+	MotherDuck,
+	Postgres,
 	Redshift,
 	S3,
 	Snowflake,
-	Iceberg,
-	Postgres,
+	Redis,
 }
 
 func IsValidDestination(destination DestinationKind) bool {

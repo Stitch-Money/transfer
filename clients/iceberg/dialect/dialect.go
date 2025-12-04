@@ -12,6 +12,10 @@ import (
 
 type IcebergDialect struct{}
 
+func (IcebergDialect) ReservedColumnNames() map[string]bool {
+	return nil
+}
+
 func (IcebergDialect) BuildIdentifier(identifier string) string {
 	return strings.ToLower(identifier)
 }
@@ -47,10 +51,6 @@ func (IcebergDialect) IsTableDoesNotExistErr(err error) bool {
 func (id IcebergDialect) BuildIsNotToastValueExpression(tableAlias constants.TableAlias, column columns.Column) string {
 	colName := sql.QuoteTableAliasColumn(tableAlias, column, id)
 	return fmt.Sprintf(`CAST(%s AS STRING) NOT LIKE '%s'`, colName, "%"+constants.ToastUnavailableValuePlaceholder+"%")
-}
-
-func (IcebergDialect) BuildDedupeTableQuery(tableID sql.TableIdentifier, primaryKeys []string) string {
-	panic("not implemented")
 }
 
 func (id IcebergDialect) BuildDedupeQueries(

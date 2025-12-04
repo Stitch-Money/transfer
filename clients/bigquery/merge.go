@@ -18,7 +18,7 @@ import (
 func (s *Store) Merge(ctx context.Context, tableData *optimization.TableData) (bool, error) {
 	var additionalEqualityStrings []string
 	if tableData.TopicConfig().BigQueryPartitionSettings != nil {
-		distinctDates, err := buildDistinctDates(tableData.TopicConfig().BigQueryPartitionSettings.PartitionField, tableData.Rows())
+		distinctDates, err := buildDistinctDates(tableData.TopicConfig().BigQueryPartitionSettings.PartitionField, tableData.Rows(), s.Dialect().ReservedColumnNames())
 		if err != nil {
 			return false, fmt.Errorf("failed to generate distinct dates: %w", err)
 		}
@@ -29,6 +29,15 @@ func (s *Store) Merge(ctx context.Context, tableData *optimization.TableData) (b
 		}
 
 		additionalEqualityStrings = []string{mergeString}
+	}
+
+	if len(tableData.TopicConfig().AdditionalMergePredicates) > 0 {
+		predicates, err := shared.BuildAdditionalEqualityStrings(s.Dialect(), tableData.TopicConfig().AdditionalMergePredicates)
+		if err != nil {
+			return false, fmt.Errorf("failed to build additional equality strings: %w", err)
+		}
+
+		additionalEqualityStrings = append(additionalEqualityStrings, predicates...)
 	}
 
 	err := shared.Merge(ctx, s, tableData, types.MergeOpts{
