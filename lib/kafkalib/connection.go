@@ -14,7 +14,7 @@ import (
 	"github.com/segmentio/kafka-go/sasl/scram"
 )
 
-const DefaultTimeout = 10 * time.Second
+const DefaultTimeout = 20 * time.Second
 
 type Mechanism string
 
