@@ -18,7 +18,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.79.0
 	github.com/aws/aws-sdk-go-v2/service/s3tables v1.2.1
 	github.com/aws/aws-sdk-go-v2/service/sts v1.33.17
-	github.com/aws/smithy-go v1.22.3
+	github.com/aws/smithy-go v1.24.2
 	github.com/cockroachdb/apd/v3 v3.2.1
 	github.com/databricks/databricks-sql-go v1.6.2
 	github.com/getsentry/sentry-go v0.31.1
@@ -62,7 +62,7 @@ require (
 	github.com/apache/arrow/go/v12 v12.0.1 // indirect
 	github.com/apache/arrow/go/v15 v15.0.2 // indirect
 	github.com/apache/thrift v0.21.0 // indirect
-	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.6.10 // indirect
+	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.8 // indirect
 	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.16.30 // indirect
 	github.com/aws/aws-sdk-go-v2/feature/s3/manager v1.17.66 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/configsources v1.3.34 // indirect
