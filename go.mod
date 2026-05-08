@@ -1,6 +1,6 @@
 module github.com/artie-labs/transfer
 
-go 1.24.0
+go 1.25
 
 tool (
 	github.com/maxbrunsfeld/counterfeiter/v6
@@ -61,7 +61,7 @@ require (
 	github.com/apache/arrow-go/v18 v18.2.0 // indirect
 	github.com/apache/arrow/go/v12 v12.0.1 // indirect
 	github.com/apache/arrow/go/v15 v15.0.2 // indirect
-	github.com/apache/thrift v0.21.0 // indirect
+	github.com/apache/thrift v0.23.0 // indirect
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.6.10 // indirect
 	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.16.30 // indirect
 	github.com/aws/aws-sdk-go-v2/feature/s3/manager v1.17.66 // indirect
