@@ -210,7 +210,7 @@ func (e *EventsTestSuite) TestEvent_SaveColumnsNoData() {
 		assert.NoError(e.T(), err)
 
 		// Testing ordering.
-		assert.True(e.T(), currentKeyParsed > prevKeyParsed, fmt.Sprintf("current key: %q, prevKey: %q", currentKeyParsed, prevKeyParsed))
+		assert.True(e.T(), currentKeyParsed > prevKeyParsed, fmt.Sprintf("current key: %d, prevKey: %d", currentKeyParsed, prevKeyParsed))
 	}
 
 	// Now let's add more keys.

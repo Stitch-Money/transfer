@@ -146,7 +146,7 @@ func (g GetTableCfgArgs) buildColumnFromRow(row map[string]string) (columns.Colu
 	case sql.NotImplemented:
 		// We don't need to do anything here.
 	default:
-		return columns.Column{}, fmt.Errorf("unknown default value strategy: %q", strategy)
+		return columns.Column{}, fmt.Errorf("unknown default value strategy: %d", strategy)
 	}
 
 	return col, nil
