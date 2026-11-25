@@ -151,6 +151,6 @@ func BackfillColumn(ctx context.Context, dest destination.Destination, column co
 		// Skip backfill for databases that don't support it (e.g., PostgreSQL)
 		return nil
 	default:
-		return fmt.Errorf("unknown default value strategy: %q", dest.Dialect().GetDefaultValueStrategy())
+		return fmt.Errorf("unknown default value strategy: %d", dest.Dialect().GetDefaultValueStrategy())
 	}
 }
